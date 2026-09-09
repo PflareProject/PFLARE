@@ -42,20 +42,29 @@ jobs:
       # (not to the PETSc self-test or the Cython build)
       PFLARE_FLAGS: CFLAGS="-Wall -Werror -Wunused-result" CXXFLAGS="-Wall -Werror -Wunused-result -std=c++20" CPPFLAGS="-Wall -Werror -Wunused-result"
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          # Don't leave the workflow token on a rented machine
-          persist-credentials: false
-
-      - name: Set up PATH
+      # Cirun starts the runner as a separate user inside the container, and the
+      # session it inherits may not have HOME pointing at that user's home. Fix
+      # it before anything (actions/checkout stats $HOME/.gitconfig). Only a
+      # handful of variables are printed: Vast.ai injects secrets into the
+      # container environment and this log is public.
+      - name: Runner environment
         run: |
+          echo "user: $(id)"
+          echo "HOME=$HOME RUNNER_TEMP=$RUNNER_TEMP GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
+          passwd_home=$(getent passwd "$(id -u)" | cut -d: -f6)
+          echo "passwd home: $passwd_home"
+          if [ -n "$passwd_home" ] && [ "$passwd_home" != "$HOME" ]; then
+            echo "Overriding HOME=$HOME with $passwd_home for the rest of the job"
+            echo "HOME=$passwd_home" >> "$GITHUB_ENV"
+          fi
+          ls -ld "$HOME" "$passwd_home" "$RUNNER_TEMP" "$GITHUB_WORKSPACE" 2>&1 || true
           echo "$VIRTUAL_ENV/bin" >> "$GITHUB_PATH"
           echo "$PETSC_DIR/$PETSC_ARCH/bin" >> "$GITHUB_PATH"
           echo "/usr/local/cuda/bin" >> "$GITHUB_PATH"
 
       # Keep this step permanently: on a marketplace you want every log to say
-      # which card you actually got.
+      # which card you actually got. Runs before checkout so a smoke run does
+      # not depend on the repository.
       - name: Record hardware
         run: |
           set -e
@@ -74,10 +83,32 @@ jobs:
             exit 1
           fi
 
-      # The step deliberately left out of the image build, as it needs a GPU
+      - name: Checkout code
+        if: ${{ !inputs.smoke_only }}
+        uses: actions/checkout@v4
+        with:
+          # Don't leave the workflow token on a rented machine
+          persist-credentials: false
+
+      # The step deliberately left out of the image build, as it needs a GPU.
+      # make check compiles and runs the examples inside the PETSc tree and
+      # ignores errors, so check the tree is writable by the runner user first
+      # (the image makes it world-writable) and fail on any error in the output.
       - name: PETSc self-test
         if: ${{ !inputs.smoke_only }}
-        run: make -C "$PETSC_DIR" check
+        run: |
+          set -o pipefail
+          for d in "$PETSC_DIR/src/snes/tutorials" "$PETSC_DIR/$PETSC_ARCH/lib/petsc/conf"; do
+            if [ ! -w "$d" ]; then
+              echo "::error::$d is not writable by $(id -un); make check would silently do nothing"
+              exit 1
+            fi
+          done
+          make -C "$PETSC_DIR" check 2>&1 | tee check_output.log
+          if grep -Eq "Possible error|Permission denied|Error [0-9]+" check_output.log; then
+            echo "::error::PETSc make check reported errors (see above)"
+            exit 1
+          fi
 
       - name: Build PFLARE
         if: ${{ !inputs.smoke_only }}
