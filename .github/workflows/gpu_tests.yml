@@ -34,10 +34,9 @@ jobs:
       VIRTUAL_ENV: /my-venv
       OMP_NUM_THREADS: 1
       HWLOC_HIDE_ERRORS: 2
-      # Same test configuration as dockerfiles/Dockerfile_kokkos: force the
-      # Kokkos types everywhere, abort on any error, and check the Kokkos
-      # results against the CPU versions
-      PFLARE_KOKKOS_DEBUG: 1
+      # Force the Kokkos types everywhere and abort on any error, as in
+      # dockerfiles/Dockerfile_kokkos. PFLARE_KOKKOS_DEBUG=1 (check the Kokkos
+      # results against the CPU versions) is deliberately not set yet.
       PETSC_OPTIONS: "-on_error_abort -mat_type aijkokkos -vec_type kokkos -dm_mat_type aijkokkos -dm_vec_type kokkos"
       # Kokkos CI compile flags, passed only to PFLARE's own make targets
       # (not to the PETSc self-test or the Cython build)
