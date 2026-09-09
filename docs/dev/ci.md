@@ -20,3 +20,8 @@ Enforced flags (why "fix all compile warnings" is a hard rule)
 
 Output-parser checks (part of `gnu_opt`)
 - `python/run_parse_tests.py` with `tools/parse_pflare_output.py` runs inside the image (`PFLARE_TESTS_DIR`, `PFLARE_TOOLS_DIR` env vars) and asserts: grid complexity < 3.0, reuse storage == 0.0, KSP iteration counts below their maxima. Changes that alter PFLARE's printed stats/timing output can break these.
+
+GPU tests (`.github/workflows/gpu_tests.yml`, manual trigger only)
+- `runs-on: cirun-gpu-runner--<run id>`: Cirun (cirun.io GitHub App, free for public repos) reads `.cirun.yml`, rents a Vast.ai RTX 3060 container from `stevendargaville/petsc_kokkos_cuda:latest` (CI_builds `Dockerfile_petsc_kokkos_cuda`: PETSc main debug, Kokkos CUDA sm_86, CUDA-aware MPICH, no PFLARE), and destroys it when the job ends. Gated by the `protected-manual-builds` environment; no secrets are exposed to the job.
+- Steps: record hardware (fails if the GPU's compute capability cannot run the image's arch), PETSc `make check` (deliberately not run in the image build), then PFLARE `make`, `make python`, `make check`, `make tests` with the Kokkos CI flags and `PFLARE_KOKKOS_DEBUG=1`. The `smoke_only` input runs only the hardware step.
+- The image arch (`CUDA_ARCH` in CI_builds) and `instance_type` in `.cirun.yml` must be changed together. The image's ENV is not visible to the runner session on Vast.ai, so the workflow sets `PETSC_DIR`/`PETSC_ARCH`/`PATH` itself.

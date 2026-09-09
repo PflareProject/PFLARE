@@ -1,0 +1,24 @@
+# Cirun (cirun.io) runner definitions for the GPU tests workflow.
+#
+# When a job asks for one of the labels below, Cirun's GitHub App reads this
+# file, rents the machine from Vast.ai with the API key stored in the Cirun
+# dashboard, registers a GitHub Actions runner inside it and destroys it when
+# the job ends. Nothing here runs unless a job requests the label.
+runners:
+  - name: gpu-runner
+    cloud: vast_ai
+    # {count}x{gpu_model}. The GPU MUST match the CUDA arch the image below was
+    # compiled for: RTX 3060 = sm_86 = CUDA_ARCH in
+    # PflareProject/CI_builds/Dockerfile_petsc_kokkos_cuda. Change both together.
+    instance_type: 1xRTX_3060
+    # Container mode: the job runs inside this image (PETSc main debug + Kokkos
+    # CUDA backend + CUDA-aware MPICH, no PFLARE), built by CI_builds.
+    machine_image: stevendargaville/petsc_kokkos_cuda:latest
+    # Labels must start with cirun-. The workflow appends --${{ github.run_id }}
+    # so every run gets its own runner.
+    labels:
+      - cirun-gpu-runner
+    extra_config:
+      # Minimum disk (GB) and RAM (GB) of the host; the image alone is ~10GB
+      disk_space: 40
+      min_ram: 16
