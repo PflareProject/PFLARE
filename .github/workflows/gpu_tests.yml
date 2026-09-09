@@ -1,0 +1,92 @@
+name: GPU tests
+
+# Runs the PETSc self-test and PFLARE's Kokkos test suite on a real NVIDIA GPU.
+#
+# The runner is a Vast.ai container rented by Cirun (see .cirun.yml) from the
+# CUDA PETSc image built in PflareProject/CI_builds
+# (stevendargaville/petsc_kokkos_cuda). It costs money per second the machine
+# is up, so it is manual-trigger only and gated behind a protected environment.
+#
+# The runner is a rented machine belonging to a stranger: do not give this
+# workflow any repository secrets.
+on:
+  workflow_dispatch:
+    inputs:
+      smoke_only:
+        description: "Only record the GPU hardware, skip the builds and tests (use for the first run to check the runner comes up and is torn down)"
+        type: boolean
+        default: false
+
+jobs:
+  gpu:
+    # Label defined in .cirun.yml; the run id suffix gives every run its own runner
+    runs-on: cirun-gpu-runner--${{ github.run_id }}
+    # Only people allowed to deploy to this environment can start a GPU run
+    environment: protected-manual-builds
+    # Hard cap on the rented GPU time
+    timeout-minutes: 30
+    env:
+      # Vast.ai does not expose the image's ENV to the session the runner is
+      # started from, so everything the build needs is set explicitly here.
+      # These must match the image (CI_builds/Dockerfile_petsc_kokkos_cuda).
+      PETSC_DIR: /build/petsc
+      PETSC_ARCH: arch-linux-c-debug
+      VIRTUAL_ENV: /my-venv
+      OMP_NUM_THREADS: 1
+      HWLOC_HIDE_ERRORS: 2
+      # Force the Kokkos types everywhere and abort on any error, as in
+      # dockerfiles/Dockerfile_kokkos. PFLARE_KOKKOS_DEBUG=1 (check the Kokkos
+      # results against the CPU versions) is deliberately not set yet.
+      PETSC_OPTIONS: "-on_error_abort -mat_type aijkokkos -vec_type kokkos -dm_mat_type aijkokkos -dm_vec_type kokkos"
+      # Kokkos CI compile flags, passed only to PFLARE's own make targets
+      # (not to the PETSc self-test or the Cython build)
+      PFLARE_FLAGS: CFLAGS="-Wall -Werror -Wunused-result" CXXFLAGS="-Wall -Werror -Wunused-result -std=c++20" CPPFLAGS="-Wall -Werror -Wunused-result"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # Don't leave the workflow token on a rented machine
+          persist-credentials: false
+
+      - name: Set up PATH
+        run: |
+          echo "$VIRTUAL_ENV/bin" >> "$GITHUB_PATH"
+          echo "$PETSC_DIR/$PETSC_ARCH/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/cuda/bin" >> "$GITHUB_PATH"
+
+      # Keep this step permanently: on a marketplace you want every log to say
+      # which card you actually got.
+      - name: Record hardware
+        run: |
+          set -e
+          echo '=== GPU Information ==='
+          nvidia-smi
+          nvidia-smi --query-gpu=name,compute_cap,driver_version,memory.total --format=csv
+          nvcc --version
+          echo "mpiexec: $(which mpiexec)"
+          # A binary built for sm_XY only runs on compute capability X.Z with Z >= Y,
+          # so fail fast if Cirun handed us the wrong card
+          want=$(grep -o 'PETSC_PKG_CUDA_MIN_ARCH [0-9]*' "$PETSC_DIR/$PETSC_ARCH/include/petscconf.h" | awk '{print $2}')
+          got=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d '. ')
+          echo "Image compiled for compute capability $want, GPU has $got"
+          if [ "${got:0:1}" != "${want:0:1}" ] || [ "$got" -lt "$want" ]; then
+            echo "::error::GPU compute capability $got cannot run code built for $want"
+            exit 1
+          fi
+
+      # The step deliberately left out of the image build, as it needs a GPU
+      - name: PETSc self-test
+        if: ${{ !inputs.smoke_only }}
+        run: make -C "$PETSC_DIR" check
+
+      - name: Build PFLARE
+        if: ${{ !inputs.smoke_only }}
+        run: |
+          eval make -j"$(nproc)" $PFLARE_FLAGS
+          make python
+
+      - name: Run PFLARE tests
+        if: ${{ !inputs.smoke_only }}
+        run: |
+          eval make -j"$(nproc)" $PFLARE_FLAGS check
+          eval make -j"$(nproc)" $PFLARE_FLAGS tests
