@@ -19,6 +19,7 @@ runners:
     labels:
       - cirun-gpu-runner
     extra_config:
-      # Minimum disk (GB) and RAM (GB) of the host; the image alone is ~10GB
-      disk_space: 40
-      min_ram: 16
+      # Minimum disk (GB) and RAM (GB) of the host; the image alone is ~10GB.
+      # Kept low so the cheap single-GPU hosts are not filtered out.
+      disk_space: 30
+      min_ram: 8

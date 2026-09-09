@@ -90,10 +90,25 @@ jobs:
           # Don't leave the workflow token on a rented machine
           persist-credentials: false
 
-      # The step deliberately left out of the image build, as it needs a GPU
+      # The step deliberately left out of the image build, as it needs a GPU.
+      # make check compiles and runs the examples inside the PETSc tree and
+      # ignores errors, so check the tree is writable by the runner user first
+      # (the image makes it world-writable) and fail on any error in the output.
       - name: PETSc self-test
         if: ${{ !inputs.smoke_only }}
-        run: make -C "$PETSC_DIR" check
+        run: |
+          set -o pipefail
+          for d in "$PETSC_DIR/src/snes/tutorials" "$PETSC_DIR/$PETSC_ARCH/lib/petsc/conf"; do
+            if [ ! -w "$d" ]; then
+              echo "::error::$d is not writable by $(id -un); make check would silently do nothing"
+              exit 1
+            fi
+          done
+          make -C "$PETSC_DIR" check 2>&1 | tee check_output.log
+          if grep -Eq "Possible error|Permission denied|Error [0-9]+" check_output.log; then
+            echo "::error::PETSc make check reported errors (see above)"
+            exit 1
+          fi
 
       - name: Build PFLARE
         if: ${{ !inputs.smoke_only }}
