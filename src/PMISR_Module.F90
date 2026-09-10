@@ -16,9 +16,13 @@ module pmisr_module
 
 ! -------------------------------------------------------------------------------------------------------------------------------
 
-   subroutine pmisr(strength_mat, max_luby_steps, pmis, cf_markers_local, zero_measure_c_point)
+   subroutine pmisr(strength_mat, max_luby_steps, pmis, cf_markers_local, cf_markers_handle, zero_measure_c_point)
 
       ! Wrapper
+      ! On the device the cf markers are left in the device context behind
+      ! cf_markers_handle (created here if it is c_null_ptr) rather than
+      ! copied back into cf_markers_local, and the caller is responsible
+      ! for destroying it with destroy_cf_markers_kokkos
 
       ! ~~~~~~
 
@@ -26,6 +30,7 @@ module pmisr_module
       integer, intent(in)                 :: max_luby_steps
       logical, intent(in)                 :: pmis
       integer, dimension(:), allocatable, target, intent(inout) :: cf_markers_local
+      type(c_ptr), intent(inout)          :: cf_markers_handle
       logical, optional, intent(in)       :: zero_measure_c_point
       integer :: errorcode
 
@@ -84,15 +89,16 @@ module pmisr_module
          allocate(cf_markers_local(local_rows))
          cf_markers_local_ptr = c_loc(cf_markers_local)
 
-         ! Creates a cf_markers on the device
-         call pmisr_kokkos(A_array, max_luby_steps, pmis_int, measure_local_ptr, zero_measure_c_point_int)
+         ! Creates a cf_markers on the device in the context behind cf_markers_handle
+         call pmisr_kokkos(cf_markers_handle, A_array, max_luby_steps, pmis_int, measure_local_ptr, &
+                  zero_measure_c_point_int)
 
          ! If debugging do a comparison between CPU and Kokkos results
          if (kokkos_debug()) then
 
             ! Kokkos PMISR by default now doesn't copy back to the host, as any following ddc calls
             ! use the device data
-            call copy_cf_markers_d2h(cf_markers_local_ptr)
+            call copy_cf_markers_d2h(cf_markers_handle, cf_markers_local_ptr)
             call pmisr_cpu(strength_mat, max_luby_steps, pmis, &
                            cf_markers_local_two, zero_measure_c_point)
 
@@ -108,6 +114,8 @@ module pmisr_module
                         cf_markers_local, zero_measure_c_point)
       end if
 #else
+      ! There are no device cf markers without Kokkos
+      cf_markers_handle = c_null_ptr
       call pmisr_cpu(strength_mat, max_luby_steps, pmis, &
                      cf_markers_local, zero_measure_c_point)
 #endif

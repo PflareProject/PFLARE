@@ -2,17 +2,32 @@
 #include "kokkos_helper.hpp"
 #include <iostream>
 
-// This is a device copy of the cf markers on a given level
-// to save having to copy it to/from the host between pmisr and ddc calls
-intKokkosView cf_markers_local_d;
-// Device copy of local fine-point diagonal-dominance ratios for DDC
-PetscScalarKokkosView diag_dom_ratio_local_d;
+// The device copy of the cf markers on a given level (to save having to copy
+// it to/from the host between pmisr and ddc calls) and of the local fine-point
+// diagonal-dominance ratios for DDC live in a CFMarkersKokkosCtx (see
+// kokkos_helper.hpp) behind the opaque handle passed in from Fortran
 
 //------------------------------------------------------------------------------------------------------------------------
 
-// Copy the global cf_markers_local_d back to the host
-PETSC_INTERN void copy_cf_markers_d2h(int *cf_markers_local)
+// Destroys the device cf markers context. handle is a pointer to a void*
+// (Fortran c_ptr by ref); sets it to NULL on exit so the caller's c_ptr
+// becomes c_null_ptr. Deleting the context releases its views
+PETSC_INTERN void destroy_cf_markers_kokkos(void **handle)
 {
+   if (!handle || !*handle) return;
+   auto *ctx = static_cast<CFMarkersKokkosCtx *>(*handle);
+   delete ctx;
+   *handle = nullptr;
+
+   return;
+}
+
+//------------------------------------------------------------------------------------------------------------------------
+
+// Copy the device cf_markers_local_d back to the host
+PETSC_INTERN void copy_cf_markers_d2h(void *handle, int *cf_markers_local)
+{
+   intKokkosView cf_markers_local_d = cf_markers_kokkos_ctx(handle)->cf_markers_local_d;
    // Host wrapper for cf_markers_local
    intKokkosViewHost cf_markers_local_h(cf_markers_local, cf_markers_local_d.extent(0));
 
@@ -28,9 +43,10 @@ PETSC_INTERN void copy_cf_markers_d2h(int *cf_markers_local)
 
 //------------------------------------------------------------------------------------------------------------------------
 
-// Copy the global diag_dom_ratio_local_d back to the host
-PETSC_INTERN void copy_diag_dom_ratio_d2h(PetscReal *diag_dom_ratio_local)
+// Copy the device diag_dom_ratio_local_d back to the host
+PETSC_INTERN void copy_diag_dom_ratio_d2h(void *handle, PetscReal *diag_dom_ratio_local)
 {
+   PetscScalarKokkosView diag_dom_ratio_local_d = cf_markers_kokkos_ctx(handle)->diag_dom_ratio_local_d;
    // Host wrapper for diag_dom_ratio_local
    PetscScalarKokkosViewHost diag_dom_ratio_h(diag_dom_ratio_local, diag_dom_ratio_local_d.extent(0));
 
@@ -46,40 +62,16 @@ PETSC_INTERN void copy_diag_dom_ratio_d2h(PetscReal *diag_dom_ratio_local)
 
 //------------------------------------------------------------------------------------------------------------------------
 
-// Delete the global cf_markers_local_d
-PETSC_INTERN void delete_device_cf_markers()
-{
-   // Delete the device view - this assigns an empty view
-   // and hence the old view has its ref counter decremented
-   cf_markers_local_d = intKokkosView();
-
-   return;
-}
-
-//------------------------------------------------------------------------------------------------------------------------
-
-// Delete the global diag_dom_ratio_local_d
-PETSC_INTERN void delete_device_diag_dom_ratio()
-{
-   // Delete the device view - this assigns an empty view
-   // and hence the old view has its ref counter decremented
-   diag_dom_ratio_local_d = PetscScalarKokkosView();
-
-   return;
-}
-
-//------------------------------------------------------------------------------------------------------------------------
-
-// Creates the device local indices for F or C points based on the global cf_markers_local_d
-PETSC_INTERN void create_cf_is_device_kokkos(Mat *input_mat, const int match_cf, PetscIntKokkosView &is_local_d)
+// Creates the device local indices for F or C points based on the device cf_markers_local_d
+PETSC_INTERN void create_cf_is_device_kokkos(void *handle, Mat *input_mat, const int match_cf, PetscIntKokkosView &is_local_d)
 {
    PetscInt local_rows, local_cols;
    PetscCallVoid(MatGetLocalSize(*input_mat, &local_rows, &local_cols));
    auto exec = PetscGetKokkosExecutionSpace();
 
-   // Can't use the global directly within the parallel
+   // Shallow copy of the context's view for use within the parallel
    // regions on the device
-   intKokkosView cf_markers_d = cf_markers_local_d;
+   intKokkosView cf_markers_d = cf_markers_kokkos_ctx(handle)->cf_markers_local_d;
 
    // ~~~~~~~~~~~~
    // Get the F point local indices from cf_markers_local_d
@@ -129,8 +121,8 @@ PETSC_INTERN void create_cf_is_device_kokkos(Mat *input_mat, const int match_cf,
 
 //------------------------------------------------------------------------------------------------------------------------
 
-// Creates the host IS is_fine and is_coarse based on the global cf_markers_local_d
-PETSC_INTERN void create_cf_is_kokkos(Mat *input_mat, IS *is_fine, IS *is_coarse)
+// Creates the host IS is_fine and is_coarse based on the device cf_markers_local_d
+PETSC_INTERN void create_cf_is_kokkos(void *handle, Mat *input_mat, IS *is_fine, IS *is_coarse)
 {
    PetscIntKokkosView is_fine_local_d, is_coarse_local_d;
    MPI_Comm MPI_COMM_MATRIX;
@@ -138,11 +130,11 @@ PETSC_INTERN void create_cf_is_kokkos(Mat *input_mat, IS *is_fine, IS *is_coarse
 
    // Create the local f point indices
    const int match_fine = -1; // F_POINT == -1
-   create_cf_is_device_kokkos(input_mat, match_fine, is_fine_local_d);
+   create_cf_is_device_kokkos(handle, input_mat, match_fine, is_fine_local_d);
 
    // Create the local C point indices
    const int match_coarse = 1; // C_POINT == 1
-   create_cf_is_device_kokkos(input_mat, match_coarse, is_coarse_local_d);
+   create_cf_is_device_kokkos(handle, input_mat, match_coarse, is_coarse_local_d);
 
    // Now convert them back to global indices
    PetscInt global_row_start, global_row_end_plus_one;

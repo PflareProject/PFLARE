@@ -1,5 +1,6 @@
 module cf_splitting
 
+   use iso_c_binding, only: c_ptr, c_null_ptr
    use petscmat
    use pflare_parameters, only: C_POINT, F_POINT, PFLARE_CR_MAX_ITS, &
             PFLARE_CR_POLY_ORDER, PFLAREINV_ARNOLDI
@@ -7,7 +8,7 @@ module cf_splitting
    use ddc_module, only: ddc
    use cr_splitting, only: cr_pass
    use sabs, only: generate_sabs
-   use c_petsc_interfaces, only: create_cf_is_kokkos, delete_device_cf_markers, delete_device_diag_dom_ratio
+   use c_petsc_interfaces, only: create_cf_is_kokkos, destroy_cf_markers_kokkos
    use aggregation, only: generate_serial_aggregation
    use petsc_helper, only: MatAXPYWrapper, MatSetAllValues, kokkos_debug, remove_small_from_sparse
 
@@ -86,12 +87,14 @@ module cf_splitting
 ! -------------------------------------------------------------------------------------------------------------------------------
 
    subroutine first_pass_splitting(input_mat, skip_symmetrize, strong_threshold, &
-                  max_luby_steps, cf_splitting_type, cf_markers_local)
+                  max_luby_steps, cf_splitting_type, cf_markers_local, cf_markers_handle)
 
       ! Compute a strength matrix and then call the first pass of CF splitting
       ! skip_symmetrize skips symmetrizing the strength matrix for the PMISR DDC,
       ! diag dom and aggregation splittings - the PMIS-based splittings always
       ! symmetrize as they are defined on the symmetrized graph
+      ! On the device the pmisr leaves the cf markers in the device context
+      ! behind cf_markers_handle
 
       ! ~~~~~~
       type(tMat), target, intent(in)      :: input_mat
@@ -99,6 +102,7 @@ module cf_splitting
       PetscReal, intent(in)                    :: strong_threshold
       integer, intent(in)                 :: max_luby_steps, cf_splitting_type
       integer, dimension(:), allocatable, intent(inout) :: cf_markers_local
+      type(c_ptr), intent(inout)          :: cf_markers_handle
 
       ! Local
       PetscInt :: global_row_start, global_row_end_plus_one, i_loc
@@ -165,18 +169,18 @@ module cf_splitting
       ! PMISR
       if (cf_splitting_type == CF_PMISR_DDC .OR. cf_splitting_type == CF_DIAG_DOM) then
 
-         call pmisr(strength_mat, max_luby_steps, .FALSE., cf_markers_local)
+         call pmisr(strength_mat, max_luby_steps, .FALSE., cf_markers_local, cf_markers_handle)
 
       ! Distance 1 PMIS
       else if (cf_splitting_type == CF_PMIS) then
 
-         call pmisr(strength_mat, max_luby_steps, .TRUE., cf_markers_local)
+         call pmisr(strength_mat, max_luby_steps, .TRUE., cf_markers_local, cf_markers_handle)
 
       ! Distance 2 PMIS
       else if (cf_splitting_type == CF_PMIS_DIST2) then
 
          ! As we have generated S'S + S for the strength matrix, this will do distance 2 PMIS
-         call pmisr(strength_mat, max_luby_steps, .TRUE., cf_markers_local)
+         call pmisr(strength_mat, max_luby_steps, .TRUE., cf_markers_local, cf_markers_handle)
 
       ! PMIS on boundary nodes then processor local aggregation
       else if (cf_splitting_type == CF_PMIS_AGG) then
@@ -185,7 +189,7 @@ module cf_splitting
          if (comm_size /= 1) then
 
             ! Do distance 1 PMIS
-            call pmisr(strength_mat, max_luby_steps, .TRUE., cf_markers_local)
+            call pmisr(strength_mat, max_luby_steps, .TRUE., cf_markers_local, cf_markers_handle)
 
             ! Get the sequential part of the matrix
             call MatMPIAIJGetSeqAIJ(strength_mat, Ad, Ao, colmap, ierr) 
@@ -267,6 +271,11 @@ module cf_splitting
 
       PetscErrorCode :: ierr
       integer, dimension(:), allocatable, target :: cf_markers_local
+      ! Opaque handle to the device copy of cf_markers_local (and the diag dom
+      ! ratios) used by the Kokkos pmisr and ddc, see CFMarkersKokkosCtx in
+      ! kokkos_helper.hpp. Owned by this routine so that concurrent CF splittings
+      ! (eg two PCAIRs setting up) don't share device storage
+      type(c_ptr) :: cf_markers_handle
       integer :: its, ddc_its_max
       logical :: need_intermediate_is
       PetscReal :: max_dd_ratio_achieved, cr_rate_achieved
@@ -281,6 +290,9 @@ module cf_splitting
 #endif       
 
       ! ~~~~~~  
+
+      ! Created by pmisr if we're on the device, destroyed at the end
+      cf_markers_handle = c_null_ptr
 
       ! In Kokkos the DDC and PMISR do everything on the device
       ! that means we don't need to create intermediate is_fine and is_coarse ISs
@@ -356,7 +368,7 @@ module cf_splitting
 
          ! Generate the strength matrix and do the first pass CF splitting
          call first_pass_splitting(input_mat, skip_symmetrize, strong_threshold, &
-                  max_luby_steps, cf_splitting_type, cf_markers_local)
+                  max_luby_steps, cf_splitting_type, cf_markers_local, cf_markers_handle)
 
          ! Create the IS for the CF splittings
          if (need_intermediate_is) call create_cf_is(input_mat, cf_markers_local, is_fine, is_coarse)
@@ -379,7 +391,8 @@ module cf_splitting
             ! (or the equivalent device cf_markers, is_fine is ignored if on the device)
             max_dd_ratio_achieved = 0d0
             if (cf_splitting_type == CF_DIAG_DOM) max_dd_ratio_achieved = strong_threshold
-            call ddc(input_mat, is_fine, fraction_swap, max_dd_ratio_achieved, cf_markers_local)
+            call ddc(input_mat, is_fine, fraction_swap, max_dd_ratio_achieved, cf_markers_local, &
+                     cf_markers_handle)
 
             ! If we did anything in our ddc second pass and hence need to rebuild
             ! the is_fine and is_coarse
@@ -409,14 +422,6 @@ module cf_splitting
       if (mat_type == MATMPIAIJKOKKOS .OR. mat_type == MATSEQAIJKOKKOS .OR. &
             mat_type == MATAIJKOKKOS) then
 
-         ! The initial pmis will be on the device, so need to destroy
-         ! Intermediate ISs are created in that case
-         if (cf_splitting_type == CF_PMIS_AGG) then
-            ! Destroys the device cf_markers_local
-            call delete_device_cf_markers()
-            call delete_device_diag_dom_ratio()
-         end if
-      
          ! Aggregation is not on the device at all, and CR never creates
          ! device cf_markers (its host ISs are already the final answer)
          if (cf_splitting_type /= CF_AGG .AND. cf_splitting_type /= CF_PMIS_AGG .AND. &
@@ -427,7 +432,7 @@ module cf_splitting
             is_coarse_array = is_coarse_kokkos%v
 
             ! Create the host is_fine and is_coarse based on device cf_markers
-            call create_cf_is_kokkos(A_array, is_fine_array, is_coarse_array)  
+            call create_cf_is_kokkos(cf_markers_handle, A_array, is_fine_array, is_coarse_array)
             is_fine_kokkos%v = is_fine_array
             is_coarse_kokkos%v = is_coarse_array         
             
@@ -454,11 +459,12 @@ module cf_splitting
                is_fine = is_fine_kokkos
                is_coarse = is_coarse_kokkos
             end if
-
-            ! Destroys the device cf_markers_local
-            call delete_device_cf_markers()
-            call delete_device_diag_dom_ratio()
          end if
+
+         ! Destroys the device cf_markers_local and diag dom ratios
+         ! For pmis agg the initial pmis was on the device so this is needed, 
+         ! for agg and cr nothing was created on the device and this does nothing
+         call destroy_cf_markers_kokkos(cf_markers_handle)
 
       end if    
 #endif       

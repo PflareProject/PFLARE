@@ -6,6 +6,11 @@ for earlier changes please see the git history.
 
 ## Unreleased
 
+- Fixed the Kokkos CF splitting keeping the device cf markers and diagonal
+  dominance ratios shared by `pmisr` and `ddc` in process-wide globals, so two
+  PCAIRs setting up concurrently would overwrite each other's markers. They
+  now live in a per-`compute_cf_splitting` context behind an opaque handle,
+  as the per-level IS views already did
 - Behaviour change: PCAIR now always symmetrizes the strength matrix used to
   compute the CF splitting. Previously `-pc_air_symmetric` skipped the
   symmetrization, so the CF splittings and hence the results of existing runs

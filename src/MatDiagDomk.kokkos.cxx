@@ -2,15 +2,15 @@
 #include "kokkos_helper.hpp"
 #include <iostream>
 
-// The definition of the device copy of the cf markers on a given level 
-// is stored in Device_Datak.kokkos.cxx and imported as extern from 
-// kokkos_helper.hpp
+// The device copy of the cf markers on a given level lives in the
+// CFMarkersKokkosCtx behind handle, see kokkos_helper.hpp
 
 //------------------------------------------------------------------------------------------------------------------------
 
-// Computes the diagonal dominance ratio of the input matrix over fine points in global variable cf_markers_local_d
+// Computes the diagonal dominance ratio of the input matrix over fine points in the device cf_markers_local_d
+// The ratios are stored on the device in diag_dom_ratio_local_d in handle for the ddc
 // This code is very similar to MatCreateSubMatrix_kokkos
-PETSC_INTERN void MatDiagDomRatio_kokkos(Mat *input_mat, PetscReal *max_dd_ratio_achieved, PetscInt *local_rows_aff)
+PETSC_INTERN void MatDiagDomRatio_kokkos(void *handle, Mat *input_mat, PetscReal *max_dd_ratio_achieved, PetscInt *local_rows_aff)
 {
    PetscInt local_rows, local_cols;
 
@@ -40,9 +40,10 @@ PETSC_INTERN void MatDiagDomRatio_kokkos(Mat *input_mat, PetscReal *max_dd_ratio
       mat_local = *input_mat;
    }
 
-   // Can't use the global directly within the parallel 
+   // Shallow copy of the context's view for use within the parallel 
    // regions on the device
-   intKokkosView cf_markers_d = cf_markers_local_d;   
+   CFMarkersKokkosCtx *ctx = cf_markers_kokkos_ctx(handle);
+   intKokkosView cf_markers_d = ctx->cf_markers_local_d;   
    intKokkosView cf_markers_nonlocal_d;
    Vec scatter_root_vec = NULL;
    PetscIntKokkosView is_fine_local_d;
@@ -52,13 +53,13 @@ PETSC_INTERN void MatDiagDomRatio_kokkos(Mat *input_mat, PetscReal *max_dd_ratio
    // Get the F point local indices from cf_markers_local_d
    // ~~~~~~~~~~~~
    const int match_cf = -1; // F_POINT == -1
-   create_cf_is_device_kokkos(input_mat, match_cf, is_fine_local_d);
+   create_cf_is_device_kokkos(handle, input_mat, match_cf, is_fine_local_d);
    PetscInt local_rows_row = is_fine_local_d.extent(0);
    *local_rows_aff = local_rows_row;
 
-   // Create device memory for the diag_dom_ratio
-   diag_dom_ratio_local_d = PetscScalarKokkosView("diag_dom_ratio_local_d", local_rows_row);
-   PetscScalarKokkosView diag_dom_ratio_d = diag_dom_ratio_local_d;
+   // Create device memory for the diag_dom_ratio in the context
+   ctx->diag_dom_ratio_local_d = PetscScalarKokkosView("diag_dom_ratio_local_d", local_rows_row);
+   PetscScalarKokkosView diag_dom_ratio_d = ctx->diag_dom_ratio_local_d;
 
    // ~~~~~~~~~~~~~~~
    // Can now go and compute the diagonal dominance sums

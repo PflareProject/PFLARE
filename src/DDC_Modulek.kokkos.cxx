@@ -2,25 +2,25 @@
 #include "kokkos_helper.hpp"
 #include <iostream>
 
-// The definition of the device copy of the cf markers on a given level 
-// is stored in Device_Datak.kokkos.cxx and imported as extern from 
-// kokkos_helper.hpp
+// The device copy of the cf markers on a given level lives in the
+// CFMarkersKokkosCtx behind handle, see kokkos_helper.hpp
 
 //------------------------------------------------------------------------------------------------------------------------
 
-// ddc cleanup but on the device - uses the global variable cf_markers_local_d
+// ddc cleanup but on the device - modifies the device cf_markers_local_d in handle
 // This no longer copies back to the host pointer cf_markers_local at the end
-// You have to explicitly call copy_cf_markers_d2h(cf_markers_local) to do this
-PETSC_INTERN void ddc_kokkos(Mat *input_mat, const PetscReal fraction_swap, const PetscReal max_dd_ratio, const PetscReal max_dd_ratio_achieved, Mat *aff, PetscReal *random_numbers)
+// You have to explicitly call copy_cf_markers_d2h(handle, cf_markers_local) to do this
+PETSC_INTERN void ddc_kokkos(void *handle, Mat *input_mat, const PetscReal fraction_swap, const PetscReal max_dd_ratio, const PetscReal max_dd_ratio_achieved, Mat *aff, PetscReal *random_numbers)
 {
-   // Can't use the global directly within the parallel 
+   // Shallow copies of the context's views for use within the parallel 
    // regions on the device
-   intKokkosView cf_markers_d = cf_markers_local_d;  
-   PetscScalarKokkosView diag_dom_ratio_d = diag_dom_ratio_local_d;
+   CFMarkersKokkosCtx *ctx = cf_markers_kokkos_ctx(handle);
+   intKokkosView cf_markers_d = ctx->cf_markers_local_d;  
+   PetscScalarKokkosView diag_dom_ratio_d = ctx->diag_dom_ratio_local_d;
    PetscIntKokkosView is_fine_local_d;
 
    const int match_cf = -1; // F_POINT == -1
-   create_cf_is_device_kokkos(input_mat, match_cf, is_fine_local_d);
+   create_cf_is_device_kokkos(handle, input_mat, match_cf, is_fine_local_d);
    PetscInt local_rows_aff = is_fine_local_d.extent(0);
 
    bool trigger_dd_ratio_compute = max_dd_ratio > 0;

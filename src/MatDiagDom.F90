@@ -20,15 +20,19 @@ module matdiagdom
 
 ! -------------------------------------------------------------------------------------------------------------------------------
 
-   subroutine MatDiagDomRatio(input_mat, is_fine, cf_markers_local, diag_dom_ratio, max_dd_ratio_achieved)
+   subroutine MatDiagDomRatio(input_mat, is_fine, cf_markers_local, cf_markers_handle, &
+                  diag_dom_ratio, max_dd_ratio_achieved)
 
       ! Wrapper for diagonal-dominance ratio computation.
       ! Chooses Kokkos or CPU implementation and optionally compares the
       ! resulting host ratios in debug mode.
+      ! On the device the cf markers are read from and the ratios are
+      ! stored in the device context behind cf_markers_handle (created by pmisr)
 
       type(tMat), target, intent(in)      :: input_mat
       type(tIS), intent(in)               :: is_fine
       integer, dimension(:), intent(in)   :: cf_markers_local
+      type(c_ptr), intent(inout)          :: cf_markers_handle
       PetscReal, dimension(:), allocatable, target, intent(out) :: diag_dom_ratio
       PetscReal, intent(out)              :: max_dd_ratio_achieved
 
@@ -53,13 +57,13 @@ module matdiagdom
          local_rows_aff_kokkos = 0
          max_dd_ratio_achieved = 0d0
 
-         call MatDiagDomRatio_kokkos(A_array, max_dd_ratio_achieved, local_rows_aff_kokkos)
+         call MatDiagDomRatio_kokkos(cf_markers_handle, A_array, max_dd_ratio_achieved, local_rows_aff_kokkos)
 
          if (kokkos_debug()) then
             allocate(diag_dom_ratio(local_rows_aff_kokkos))
             if (local_rows_aff_kokkos > 0) then
                diag_dom_ratio_ptr = c_loc(diag_dom_ratio)
-               call copy_diag_dom_ratio_d2h(diag_dom_ratio_ptr)
+               call copy_diag_dom_ratio_d2h(cf_markers_handle, diag_dom_ratio_ptr)
             end if
 
             call MatDiagDomRatio_cpu(input_mat, is_fine, cf_markers_local, &
@@ -87,6 +91,8 @@ module matdiagdom
                                   diag_dom_ratio, max_dd_ratio_achieved)
       end if
 #else
+      ! There are no device cf markers or ratios without Kokkos
+      cf_markers_handle = c_null_ptr
       call MatDiagDomRatio_cpu(input_mat, is_fine, cf_markers_local, &
                                diag_dom_ratio, max_dd_ratio_achieved)
 #endif

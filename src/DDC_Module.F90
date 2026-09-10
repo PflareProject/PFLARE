@@ -19,7 +19,7 @@ module ddc_module
 
 ! -------------------------------------------------------------------------------------------------------------------------------
 
-   subroutine ddc(input_mat, is_fine, fraction_swap, max_dd_ratio, cf_markers_local)
+   subroutine ddc(input_mat, is_fine, fraction_swap, max_dd_ratio, cf_markers_local, cf_markers_handle)
 
       ! Second pass diagonal dominance cleanup 
       ! Flips the F definitions to C based on least diagonally dominant local rows
@@ -28,6 +28,8 @@ module ddc_module
       !  for swapping C to F based on row-wise diagonal dominance (ie alpha_diag)
       ! If fraction_swap > 0 it uses fraction_swap as the local fraction of worst C points to swap to F
       !  though it won't hit that fraction exactly as we bin the diag dom ratios for speed, it will be close to the fraction
+      ! On the device this modifies the cf markers in the device context behind
+      ! cf_markers_handle (created by pmisr) rather than cf_markers_local
 
       ! ~~~~~~
       type(tMat), target, intent(in)      :: input_mat
@@ -35,6 +37,7 @@ module ddc_module
       PetscReal, intent(in)               :: fraction_swap
       PetscReal, intent(inout)            :: max_dd_ratio
       integer, dimension(:), allocatable, target, intent(inout) :: cf_markers_local
+      type(c_ptr), intent(inout)          :: cf_markers_handle
 
       type(tMat) :: Aff_ddc
       PetscErrorCode :: ierr
@@ -73,7 +76,8 @@ module ddc_module
       ! or stored in a device copy for kokkos
       ! max_dd_ratio_achieved is always returned and is the max diag dom ratio across
       ! all ranks
-      call MatDiagDomRatio(input_mat, is_fine, cf_markers_local, diag_dom_ratio, max_dd_ratio_achieved)
+      call MatDiagDomRatio(input_mat, is_fine, cf_markers_local, cf_markers_handle, &
+               diag_dom_ratio, max_dd_ratio_achieved)
 
       ! If we have hit the required diagonal dominance ratio, return
       if (trigger_dd_ratio_compute_local .AND. max_dd_ratio_achieved < max_dd_ratio) then
@@ -119,7 +123,7 @@ module ddc_module
          if (trigger_dd_ratio_compute_local) then
 
             ! Create the host is_fine and is_coarse based on device cf_markers
-            call create_cf_is_kokkos(A_array, is_fine_array, is_coarse_array)
+            call create_cf_is_kokkos(cf_markers_handle, A_array, is_fine_array, is_coarse_array)
             is_fine_temp%v = is_fine_array
             is_coarse_temp%v = is_coarse_array
 
@@ -141,15 +145,15 @@ module ddc_module
          end if
 
          ! Modifies the existing device cf_markers created by the pmisr
-         call ddc_kokkos(A_array, fraction_swap, max_dd_ratio, max_dd_ratio_achieved, Aff_array, &
-            random_numbers_ptr)
+         call ddc_kokkos(cf_markers_handle, A_array, fraction_swap, max_dd_ratio, max_dd_ratio_achieved, &
+            Aff_array, random_numbers_ptr)
 
          ! If debugging do a comparison between CPU and Kokkos results
          if (kokkos_debug()) then
 
             ! Kokkos DDC by default now doesn't copy back to the host, as any subsequent ddc calls
             ! use the existing device data
-            call copy_cf_markers_d2h(cf_markers_local_ptr)
+            call copy_cf_markers_d2h(cf_markers_handle, cf_markers_local_ptr)
             if (trigger_dd_ratio_compute_local) then
                call ddc_cpu(input_mat, is_fine, fraction_swap, max_dd_ratio, max_dd_ratio_achieved, &
                   diag_dom_ratio, cf_markers_local_two, &

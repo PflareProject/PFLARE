@@ -38,11 +38,9 @@ using KokkosCsrMatrix = KokkosSparse::CrsMatrix<PetscScalar, PetscInt, DefaultMe
 
 PETSC_INTERN void mat_duplicate_copy_plus_diag_kokkos(Mat *, int, Mat *);
 PETSC_INTERN void rewrite_j_global_to_local(PetscInt, PetscInt&, PetscIntKokkosView, PetscInt**);
-PETSC_INTERN void create_cf_is_device_kokkos(Mat *input_mat, const int match_cf, PetscIntKokkosView &is_local_d);
+PETSC_INTERN void create_cf_is_device_kokkos(void *handle, Mat *input_mat, const int match_cf, PetscIntKokkosView &is_local_d);
 PETSC_INTERN void pmisr_existing_measure_cf_markers_kokkos(Mat *strength_mat, const int max_luby_steps, const int pmis_int, PetscScalarKokkosView &measure_local_d, intKokkosView &cf_markers_d, const int zero_measure_c_point_int);
 PETSC_INTERN void pmisr_existing_measure_implicit_transpose_kokkos(Mat *strength_mat, const int max_luby_steps, const int pmis_int, PetscScalarKokkosView &measure_local_d, intKokkosView &cf_markers_d, const int zero_measure_c_point_int);
-PETSC_INTERN void copy_diag_dom_ratio_d2h(PetscReal *diag_dom_ratio_local);
-PETSC_INTERN void delete_device_diag_dom_ratio();
 
 // Per-PCAIR IS views (fine/coarse per multigrid level) live behind an opaque
 // handle owned by the air_data on the Fortran side; see VecISCopyLocalk for
@@ -51,8 +49,28 @@ PETSC_INTERN void delete_device_diag_dom_ratio();
 // returning a C++ Kokkos View. Callers are all C++ (.kokkos.cxx).
 PETSC_VISIBILITY_INTERNAL PetscIntKokkosView VecISCopyLocal_kokkos_get_view(void *handle, int our_level, int fine_int);
 
-extern intKokkosView cf_markers_local_d;
-extern PetscScalarKokkosView diag_dom_ratio_local_d;
+// Per-CF-splitting device storage: the cf markers on a given level (kept on
+// the device between the pmisr and ddc calls to save host round-trips) and the
+// fine-point diagonal dominance ratios the ddc uses. These used to be
+// file-scope globals in Device_Datak.kokkos.cxx, so two PCAIR instances setting
+// up concurrently would overwrite each other's markers (the same hazard as the
+// per-level IS views, see VecISCopyLocalKokkosCtx). The context is created by
+// pmisr_kokkos, owned as an opaque c_ptr by compute_cf_splitting on the Fortran
+// side, threaded through every kokkos call that needs it and destroyed by
+// destroy_cf_markers_kokkos.
+struct CFMarkersKokkosCtx {
+   // Be careful these aren't petsc ints
+   intKokkosView cf_markers_local_d;
+   PetscScalarKokkosView diag_dom_ratio_local_d;
+};
+
+// Cast an opaque handle back to its context. A null handle means a device
+// routine that needs the cf markers ran before pmisr_kokkos created them
+static inline CFMarkersKokkosCtx *cf_markers_kokkos_ctx(void *handle)
+{
+   PetscCheckAbort(handle, PETSC_COMM_SELF, PETSC_ERR_ARG_NULL, "Null device cf markers handle - pmisr_kokkos has not been called");
+   return static_cast<CFMarkersKokkosCtx *>(handle);
+}
 
 // ~~~~~~~~~~~~~~~~~~
 // Some custom reductions we use 

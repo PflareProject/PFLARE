@@ -1307,10 +1307,17 @@ PETSC_INTERN void pmisr_existing_measure_implicit_transpose_kokkos(Mat *strength
 //------------------------------------------------------------------------------------------------------------------------
 
 // PMISR cf splitting but on the device
+// The resulting cf markers stay on the device in the CFMarkersKokkosCtx behind
+// handle (a pointer to a void*, ie a Fortran c_ptr by ref), which is created
+// here if handle is null and destroyed by destroy_cf_markers_kokkos
 // This no longer copies back to the host pointer cf_markers_local at the end
-// You have to explicitly call copy_cf_markers_d2h(cf_markers_local) to do this
-PETSC_INTERN void pmisr_kokkos(Mat *strength_mat, const int max_luby_steps, const int pmis_int, PetscReal *measure_local, const int zero_measure_c_point_int)
+// You have to explicitly call copy_cf_markers_d2h(handle, cf_markers_local) to do this
+PETSC_INTERN void pmisr_kokkos(void **handle, Mat *strength_mat, const int max_luby_steps, const int pmis_int, PetscReal *measure_local, const int zero_measure_c_point_int)
 {
+   PetscCheckAbort(handle, PETSC_COMM_SELF, PETSC_ERR_ARG_NULL, "Null pointer to the device cf markers handle");
+   // Create the device cf markers context if this is the first pmisr with this handle
+   if (!*handle) *handle = new CFMarkersKokkosCtx;
+   CFMarkersKokkosCtx *ctx = static_cast<CFMarkersKokkosCtx *>(*handle);
 
    MPI_Comm MPI_COMM_MATRIX;
    PetscInt local_rows, local_cols, global_rows, global_cols;
@@ -1344,11 +1351,11 @@ PETSC_INTERN void pmisr_kokkos(Mat *strength_mat, const int max_luby_steps, cons
    PetscCallVoid(MatSeqAIJGetCSRAndMemType(mat_local, &device_local_i, &device_local_j, NULL, &mtype));
    if (mpi) PetscCallVoid(MatSeqAIJGetCSRAndMemType(mat_nonlocal, &device_nonlocal_i, &device_nonlocal_j, NULL, &mtype));
 
-   // Device memory for the global variable cf_markers_local_d - be careful these aren't petsc ints
-   cf_markers_local_d = intKokkosView("cf_markers_local_d", local_rows);
-   // Can't use the global directly within the parallel
-   // regions on the device so just take a shallow copy
-   intKokkosView cf_markers_d = cf_markers_local_d;
+   // Device memory for the context's cf_markers_local_d - be careful these aren't petsc ints
+   ctx->cf_markers_local_d = intKokkosView("cf_markers_local_d", local_rows);
+   // Shallow copy of the context's view for use within the parallel
+   // regions on the device
+   intKokkosView cf_markers_d = ctx->cf_markers_local_d;
 
    // Host and device memory for the measure
    PetscScalarKokkosViewHost measure_local_h(measure_local, local_rows);
