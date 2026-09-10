@@ -146,7 +146,8 @@ module gmres_poly_apply
       type(tVec)                :: y
 
       ! Local
-      integer :: order
+      integer :: order, n_products
+      type(tVec) :: cur_vec, other_vec, swap_vec
       PetscErrorCode :: ierr      
 
       ! ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -167,36 +168,55 @@ module gmres_poly_apply
       ! x^n+1 = x^n + B * r^n
       ! so the x passed in should be the residual r^n, and we don't need to add x^n to
       ! the solution, as the richardson is doing that for us. We have to ensure the richardson scale is one though.
+      !
+      ! The iteration ping-pongs between temp_vec and y (like petsc_horner_block does
+      ! with its two dense temporaries), so each order is just a matvec and an axpy
+      ! with no copy. Each matvec writes into the other vector, so we count the
+      ! matvecs up front and choose which vector to start in so the final result
+      ! lands in y without a copy at the end either
       ! ~~~~~~~
 
-      ! Let's do the first y = alpha_n-1 r_0 (ie the highest order term first)
-      call VecAXPBY(y, &
+      ! Count the matvecs we'll do - one per nonzero coefficient below the highest order
+      n_products = 0
+      do order = size(coefficients, 1)-1, 1, -1
+         if (coefficients(order) /= 0d0) n_products = n_products + 1
+      end do
+
+      ! An odd number of matvecs starting in temp_vec ends in y, an even number starting in y ends in y
+      if (mod(n_products, 2) == 1) then
+         cur_vec = temp_vec
+         other_vec = y
+      else
+         cur_vec = y
+         other_vec = temp_vec
+      end if
+
+      ! Let's do the first cur = alpha_n-1 r_0 (ie the highest order term first)
+      call VecAXPBY(cur_vec, &
                coefficients(size(coefficients)), &
                PFLARE_ZERO, &
                x, ierr)
 
-      ! If we are doing a first order polynomial or above, we have to do an extra matvec per order
-      if (size(coefficients, 1) > 1) then     
+      ! Loop down from the second highest order term down to the constant, one matvec
+      ! per order - a zeroth order polynomial has only the constant so never enters the loop
+      do order = size(coefficients, 1)-1, 1, -1
 
-         ! Loop down from the second highest order term down to the constant
-         do order = size(coefficients, 1)-1, 1, -1
+         ! Skip this coefficient if zero
+         if (coefficients(order) == 0d0) cycle
 
-            ! Skip this coefficient if zero
-            if (coefficients(order) == 0d0) cycle
+         ! other = A * cur
+         call MatMult(mat, cur_vec, other_vec, ierr)
 
-            ! Copy y into temp_vec
-            call VecCopy(y, temp_vec, ierr)             
+         ! Compute other = A * cur + alpha_n-i-1 r_0
+         call VecAXPY(other_vec, &
+                  coefficients(order), &
+                  x, ierr)
 
-            ! Now do y = A * temp_vec
-            call MatMult(mat, temp_vec, y, ierr)
-
-            ! Compute y = A * temp_vec + alpha_n-i-1 r_0
-            call VecAXPBY(y, &
-                     coefficients(order), &
-                     PFLARE_ONE, &
-                     x, ierr)
-         end do
-      end if
+         ! The result of this order is the input of the next
+         swap_vec = cur_vec
+         cur_vec = other_vec
+         other_vec = swap_vec
+      end do
 
    end subroutine petsc_horner
 
