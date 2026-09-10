@@ -1,5 +1,8 @@
 static char help[] = "Reads a PETSc matrix and sets up two concurrent PCAIR\n\
 preconditioners on it, this checks the data structures are per PCAIR.\n\
+Also checks the options prefix of each PCAIR reaches its inner PCMG: any\n\
+-air1_mg_* / -air2_mg_* options given must be used, and unprefixed -mg_*\n\
+options must not be.\n\
 \n\
 Input arguments:\n\
   -f <input_file> : matrix to load (see $PETSC_DIR/share/petsc/datafiles/matrices)\n\n";
@@ -30,6 +33,45 @@ static PetscErrorCode BuildAIRKSP(MPI_Comm comm, Mat A, const char *prefix, Pets
   PetscFunctionReturn(PETSC_SUCCESS);
 }
 
+/* PCAIR must hand its options prefix down to its inner PCMG, whose level KSPs
+   are then named <prefix>mg_coarse_ / <prefix>mg_levels_N_ and read their
+   options in PCSetUp_MG. Any such prefixed option on the command line must
+   therefore have been used by the time the KSPs are set up, and the
+   unprefixed -mg_* options must have been ignored. Only options that are
+   actually present are checked, so the driver still runs bare. */
+static PetscErrorCode CheckPrefixedOption(const char *name, PetscBool expect_used, PetscBool *ok)
+{
+  PetscBool present, used;
+  PetscFunctionBeginUser;
+  /* PetscOptionsUsed matches the stored name, which has no leading dash. It
+     has to be asked first, as PetscOptionsHasName itself marks the option
+     as used */
+  PetscCall(PetscOptionsUsed(NULL, name + 1, &used));
+  PetscCall(PetscOptionsHasName(NULL, NULL, name, &present));
+  if (!present) PetscFunctionReturn(PETSC_SUCCESS);
+  if (used != expect_used) {
+    *ok = PETSC_FALSE;
+    PetscCall(PetscPrintf(PETSC_COMM_WORLD, "Option %s was %s\n", name, used ? "used but should not have been" : "not used"));
+  }
+  /* An unprefixed option is meant to go unused, drop it so PetscFinalize
+     doesn't warn about it */
+  if (!expect_used) PetscCall(PetscOptionsClearValue(NULL, name));
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+static PetscErrorCode CheckOptionsPrefixes(PetscBool *ok)
+{
+  const char *prefixed[] = {"-air1_mg_coarse_ksp_type", "-air1_mg_coarse_ksp_max_it", "-air1_mg_coarse_pc_type",
+                            "-air2_mg_coarse_ksp_type", "-air2_mg_coarse_ksp_max_it", "-air2_mg_coarse_pc_type"};
+  const char *unprefixed[] = {"-mg_coarse_ksp_type", "-mg_coarse_ksp_max_it", "-mg_coarse_pc_type"};
+  size_t      i;
+  PetscFunctionBeginUser;
+  *ok = PETSC_TRUE;
+  for (i = 0; i < sizeof(prefixed) / sizeof(prefixed[0]); i++) PetscCall(CheckPrefixedOption(prefixed[i], PETSC_TRUE, ok));
+  for (i = 0; i < sizeof(unprefixed) / sizeof(unprefixed[0]); i++) PetscCall(CheckPrefixedOption(unprefixed[i], PETSC_FALSE, ok));
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
 int main(int argc, char **args)
 {
   Mat                A, A_diff_type;
@@ -42,6 +84,7 @@ int main(int argc, char **args)
   MatType            mtype, mtype_input;
   KSP                ksp1, ksp2;
   KSPConvergedReason reason1, reason2;
+  PetscBool          prefixes_ok;
   int                npe;
 
   PetscCall(PetscInitialize(&argc, &args, (char *)0, help));
@@ -105,6 +148,10 @@ int main(int argc, char **args)
   PetscCall(BuildAIRKSP(PETSC_COMM_WORLD, A, "air1_", 0.3, &ksp1));
   PetscCall(BuildAIRKSP(PETSC_COMM_WORLD, A, "air2_", 0.8, &ksp2));
 
+  /* Both hierarchies are built, so the prefixed -airN_mg_* options have been
+     read by now if the prefix made it down to the inner PCMGs */
+  PetscCall(CheckOptionsPrefixes(&prefixes_ok));
+
   PetscCall(KSPSolve(ksp1, b, x1));
   PetscCall(KSPGetConvergedReason(ksp1, &reason1));
 
@@ -113,10 +160,10 @@ int main(int argc, char **args)
   PetscCall(KSPGetConvergedReason(ksp2, &reason2));
 
   PetscCall(PetscPrintf(PETSC_COMM_WORLD,
-                        "ksp1 reason = %d, ksp2 reason = %d\n",
-                        (int)reason1, (int)reason2));
+                        "ksp1 reason = %d, ksp2 reason = %d, options prefixes %s\n",
+                        (int)reason1, (int)reason2, prefixes_ok ? "ok" : "NOT propagated"));
 
-  int exit_code = (reason1 >= 0 && reason2 >= 0) ? 0 : 1;
+  int exit_code = (reason1 >= 0 && reason2 >= 0 && prefixes_ok) ? 0 : 1;
 
   PetscCall(KSPDestroy(&ksp1));
   PetscCall(KSPDestroy(&ksp2));

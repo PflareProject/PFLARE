@@ -104,7 +104,8 @@ run_tests_load_serial:
 #
 	@echo ""
 	@echo "Test two concurrent AIRG solves"
-	./ex6_two_airg -f data/mat_stream_2364
+	./ex6_two_airg -f data/mat_stream_2364 -air1_mg_coarse_ksp_type richardson -air1_mg_coarse_ksp_max_it 3 \
+	 -air2_mg_coarse_ksp_type richardson -air2_mg_coarse_ksp_max_it 2 -mg_coarse_ksp_max_it 5
 #
 	@echo ""
 	@echo "Test AIRG can solve triangle factors from ILU factorisations"
@@ -222,7 +223,8 @@ else
 	$(MPIEXEC) -n 2 ./ex6 -f data/mat_stream_2364 -pc_air_a_drop 1e-3 -pc_air_inverse_type power -pc_air_matrix_free_polys -ksp_max_it 5
 #
 	@echo "Test two concurrent AIRG solves in parallel"
-	$(MPIEXEC) -n 2 ./ex6_two_airg -f data/mat_stream_2364
+	$(MPIEXEC) -n 2 ./ex6_two_airg -f data/mat_stream_2364 -air1_mg_coarse_ksp_type richardson -air1_mg_coarse_ksp_max_it 3 \
+	 -air2_mg_coarse_ksp_type richardson -air2_mg_coarse_ksp_max_it 2 -mg_coarse_ksp_max_it 5
 #
 	@echo "Test AIRG can solve triangle factors from ILU factorisations in parallel"
 	$(MPIEXEC) -n 2 ./ilu_factors -f data/mat_stream_2364
