@@ -6,6 +6,11 @@ for earlier changes please see the git history.
 
 ## Unreleased
 
+- Fixed PCAIR not passing its options prefix down to its inner PCMG. The
+  `-mg_coarse_*` / `-mg_levels_*` options were read unprefixed by every PCAIR
+  in a program, and `-foo_mg_coarse_*` for a PCAIR with prefix `-foo_` was
+  silently ignored. The level KSPs now carry the PCAIR prefix, so a prefixed
+  PCAIR reads `-foo_mg_coarse_*` and no longer reads the unprefixed options
 - Behaviour change: PCAIR now always symmetrizes the strength matrix used to
   compute the CF splitting. Previously `-pc_air_symmetric` skipped the
   symmetrization, so the CF splittings and hence the results of existing runs

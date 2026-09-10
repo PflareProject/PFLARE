@@ -16,6 +16,7 @@ PETSC_EXTERN void PCReset_AIR_Shell_c(PC *pc);
 PETSC_EXTERN void create_pc_air_data_c(void **pc_air_data);
 PETSC_EXTERN void create_pc_air_shell_c(void **pc_air_data, PC *pc);
 PETSC_EXTERN void pcair_shell_block_matapply_c(PC *pc, Mat *X, Mat *Y, int *applied, int *error_code);
+PETSC_EXTERN void pcair_shell_get_pcmg_c(PC *pc, PC *pcmg);
 PETSC_EXTERN void compute_cf_splitting_c(Mat *input_mat, int skip_symmetrize_int,
    PetscReal strong_threshold, int max_luby_steps, int cf_splitting_type,
    int ddc_its, PetscReal fraction_swap,
@@ -225,11 +226,23 @@ static PetscErrorCode PCSetUp_AIR_c(PC pc)
 {
    PetscFunctionBegin;
    PC *pc_air_shell = (PC *)pc->data;
+   PC pcmg;
+   const char *prefix;
 
    // The pc_air_shell doesn't have any operators yet
    // as they are not available yet in pccreate
    // so we have to set them
    PetscCall(PCSetOperators(*pc_air_shell, pc->mat, pc->pmat));
+
+   // Pass our options prefix down to the shell and the underlying PCMG
+   // PCMGSetLevels uses the prefix of the PCMG when it names the level KSPs
+   // and PCSetUp_MG then calls KSPSetFromOptions on them, so this is what
+   // makes -prefix_mg_coarse_* and -prefix_mg_levels_* reach this PCAIR only
+   // rather than the unprefixed -mg_coarse_* hitting every PCAIR
+   PetscCall(PCGetOptionsPrefix(pc, &prefix));
+   PetscCall(PCSetOptionsPrefix(*pc_air_shell, prefix));
+   pcair_shell_get_pcmg_c(pc_air_shell, &pcmg);
+   PetscCall(PCSetOptionsPrefix(pcmg, prefix));
 
    // Keep the shell's reusepreconditioner flag in sync - if the flag has
    // been unset after a frozen solve the shell must be allowed

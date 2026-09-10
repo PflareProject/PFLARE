@@ -97,6 +97,27 @@ module c_fortran_bindings
 
    !------------------------------------------------------------------------------------------------------------------------
 
+   subroutine pcair_shell_get_pcmg_c(pc_ptr, pcmg_ptr) bind(C,name='pcair_shell_get_pcmg_c')
+
+      ! Returns the PCMG underneath our PCShell as a long long
+
+      ! ~~~~~~~~
+      integer(c_long_long), intent(in)  :: pc_ptr
+      integer(c_long_long), intent(out) :: pcmg_ptr
+
+      type(tPC)   :: pc
+      type(pc_air_multigrid_data), pointer :: pc_air_data => null()
+      PetscErrorCode :: ierr
+      ! ~~~~~~~~
+
+      pc%v = pc_ptr
+      call PCShellGetContext(pc, pc_air_data, ierr)
+      pcmg_ptr = pc_air_data%pcmg%v
+
+   end subroutine pcair_shell_get_pcmg_c
+
+   !------------------------------------------------------------------------------------------------------------------------
+
    subroutine pcair_shell_block_matapply_c(pc_ptr, x_ptr, y_ptr, applied_int, error_int) &
          bind(C,name='pcair_shell_block_matapply_c')
 
