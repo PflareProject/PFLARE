@@ -43,7 +43,7 @@ we find that the 10th order polynomials are good enough coarse solvers to enable
 
 Both `PCPFLAREINV` and `PCAIR` implement `PCMatApply`, so systems with multiple right-hand sides can be solved with `KSPMatSolve` and the preconditioner is applied to the whole dense block of right-hand sides at once. Every product in the polynomial inverses and throughout the AIR hierarchy then goes through the `MatProduct` API, so with Kokkos matrix/vector types the sparse matrix by dense matrix products use real SpMM kernels and the whole multiple right-hand side solve stays on the GPU.
 
-Note that `KSPMatSolve` only reaches `PCMatApply` with `-ksp_type preonly` or `-ksp_type richardson` (or HPDDM); any other KSP type silently falls back to solving column by column. Dense scratch blocks with the same number of columns as the block of right-hand sides are stored (in `PCAIR` on each level of the hierarchy), and `-ksp_matsolve_batch_size` can be used to bound this memory by solving the right-hand sides in batches.
+Note that `KSPMatSolve` only reaches `PCMatApply` with `-ksp_type preonly` or `-ksp_type richardson` (or HPDDM); any other KSP type silently falls back to solving column by column. Dense scratch blocks with the same number of columns as the block of right-hand sides are stored (in `PCAIR` on each level of the hierarchy, and one in an assembled `PCPFLAREINV` that keeps the symbolic phase of its product cached between applies), and `-ksp_matsolve_batch_size` can be used to bound this memory by solving the right-hand sides in batches.
 
 For example, solving the 1D advection problem with 16 right-hand sides with AIRG on a single GPU:
 

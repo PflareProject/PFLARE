@@ -70,7 +70,35 @@ typedef struct {
    // If PETSC_TRUE and SAME_NONZERO_PATTERN, skip coefficient recomputation
    PetscBool  reuse_poly_coeffs;
 
+   // Dense work matrix for the assembled PCMatApply, with the product
+   // block_work = mat_inverse * X attached so repeat applies only run the numeric
+   // phase - the symbolic phase of the mpi product builds the dense scatter every
+   // time it runs. Lazily built on the first PCMatApply and torn down by PCReset.
+   // The product keeps the last X it was bound to (and the mat_inverse it was set
+   // up with) alive until the next apply or reset.
+   Mat        block_work;
+   // The mat_inverse (and its nonzero state - the mpi scatter is built from its
+   // sparsity) and the lda of X the product on block_work was set up with. The
+   // product holds a reference to that mat_inverse so the handle comparison is safe
+   Mat              block_work_inverse;
+   PetscObjectState block_work_inverse_nz_state;
+   PetscInt         block_work_lda;
+
 } PC_PFLAREINV;
+
+// ~~~~~~~~~~
+
+// Drops the cached block work matrix (and the product attached to it, which is
+// cleared by MatDestroy) so the next PCMatApply sets the product up again
+static PetscErrorCode PCPFLAREINVResetBlockWork_Private(PC_PFLAREINV *inv_data)
+{
+   PetscFunctionBegin;
+   PetscCall(MatDestroy(&inv_data->block_work));
+   inv_data->block_work_inverse          = NULL;
+   inv_data->block_work_inverse_nz_state = 0;
+   inv_data->block_work_lda              = -1;
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
 
 // ~~~~~~~~~~
 
@@ -80,6 +108,8 @@ static PetscErrorCode PCReset_PFLAREINV_c(PC pc)
 
    PetscFunctionBegin;
    inv_data = (PC_PFLAREINV *)pc->data;    
+   // The block work matrix's product references mat_inverse, so drop it first
+   PetscCall(PCPFLAREINVResetBlockWork_Private(inv_data));
    reset_inverse_mat_c(&(inv_data->mat_inverse));
    // Free stored polynomial coefficients (Fortran-allocated or C-malloc'd, both freed with free())
    free(inv_data->poly_coeffs);
@@ -676,13 +706,59 @@ static PetscErrorCode PCMatApply_PFLAREINV_c(PC pc, Mat X, Mat Y)
       }
    } else {
       // Assembled inverse: real SpMM via MatProduct.
-      PetscCall(MatProductCreateWithMat(inv_data->mat_inverse, X, NULL, Y));
-      PetscCall(MatProductSetType(Y, MATPRODUCT_AB));
-      PetscCall(MatProductSetFromOptions(Y));
-      PetscCall(MatProductSymbolic(Y));
-      PetscCall(MatProductNumeric(Y));
-      // Drop product bookkeeping so Y doesn't retain refs to mat_inverse, X.
-      PetscCall(MatProductClear(Y));
+      // The product is attached to a dense work matrix the pc owns and stays attached
+      // between applies, so only its numeric phase runs on repeat calls - the same
+      // as the matrix-free block kernels and KSPRICHARDSON's block solve do. The
+      // symbolic phase of the mpi product builds the dense scatter, so we only want
+      // it to run when something about the operands changes.
+      // The product is bound to the caller's X so the input isn't copied, but the
+      // bookkeeping can't live on the caller's Y (petsc errors if a mat that already
+      // has a product is used as the output of another one), so the result goes
+      // through the work matrix and is copied into Y.
+      PetscBool        reuse = PETSC_FALSE;
+      PetscInt         lda;
+      PetscObjectState nz_state;
+
+      PetscCall(MatDenseGetLDA(X, &lda));
+      PetscCall(MatGetNonzeroState(inv_data->mat_inverse, &nz_state));
+      if (inv_data->block_work) {
+         // We can reuse the product if the inverse is the one it was set up with and
+         // its sparsity hasn't changed (a setup with the same nonzero pattern only
+         // changes its values), Y has the same type and layout as the work matrix
+         // (which fixes the number of right-hand sides) and X has the lda the mpi
+         // scatter was built with
+         // Any change in X's type is handled by MatProductReplaceMats below
+         PetscBool same_type;
+         PetscInt  work_m, work_n, work_M, work_N, y_m, y_n, y_M, y_N;
+         PetscCall(PetscObjectTypeCompare((PetscObject)inv_data->block_work, ((PetscObject)Y)->type_name, &same_type));
+         PetscCall(MatGetLocalSize(inv_data->block_work, &work_m, &work_n));
+         PetscCall(MatGetLocalSize(Y, &y_m, &y_n));
+         PetscCall(MatGetSize(inv_data->block_work, &work_M, &work_N));
+         PetscCall(MatGetSize(Y, &y_M, &y_N));
+         reuse = (PetscBool)(same_type && inv_data->block_work_inverse == inv_data->mat_inverse && \
+                             inv_data->block_work_inverse_nz_state == nz_state && \
+                             inv_data->block_work_lda == lda && \
+                             work_m == y_m && work_n == y_n && work_M == y_M && work_N == y_N);
+         if (!reuse) PetscCall(PCPFLAREINVResetBlockWork_Private(inv_data));
+      }
+
+      if (reuse) {
+         PetscCall(PetscInfo(pc, "assembled PCMatApply reusing the cached symbolic phase of the product\n"));
+         // Bind the product to this call's X - the symbolic phase only reruns if X's type changed
+         PetscCall(MatProductReplaceMats(NULL, X, NULL, inv_data->block_work));
+      } else {
+         PetscCall(PetscInfo(pc, "assembled PCMatApply setting up the product\n"));
+         PetscCall(MatDuplicate(Y, MAT_DO_NOT_COPY_VALUES, &inv_data->block_work));
+         PetscCall(MatProductCreateWithMat(inv_data->mat_inverse, X, NULL, inv_data->block_work));
+         PetscCall(MatProductSetType(inv_data->block_work, MATPRODUCT_AB));
+         PetscCall(MatProductSetFromOptions(inv_data->block_work));
+         PetscCall(MatProductSymbolic(inv_data->block_work));
+         inv_data->block_work_inverse          = inv_data->mat_inverse;
+         inv_data->block_work_inverse_nz_state = nz_state;
+         inv_data->block_work_lda              = lda;
+      }
+      PetscCall(MatProductNumeric(inv_data->block_work));
+      PetscCall(MatCopy(inv_data->block_work, Y, SAME_NONZERO_PATTERN));
    }
    PetscFunctionReturn(PETSC_SUCCESS);
 }
@@ -990,6 +1066,10 @@ PETSC_EXTERN PetscErrorCode PCCreate_PFLAREINV(PC pc)
    inv_data->poly_coeffs_rows  = 0;
    inv_data->poly_coeffs_cols  = 0;
    inv_data->reuse_poly_coeffs = PETSC_FALSE;
+   inv_data->block_work                  = NULL;
+   inv_data->block_work_inverse          = NULL;
+   inv_data->block_work_inverse_nz_state = 0;
+   inv_data->block_work_lda              = -1;
 
    // Set the method functions
    pc->ops->apply               = PCApply_PFLAREINV_c;
