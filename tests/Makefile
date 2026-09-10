@@ -300,6 +300,18 @@ run_tests_no_load_short_serial:
 	./reuse_preconditioner
 #
 	@echo ""
+	@echo "Test PCAIR gives back the operators it was given with their reference counts intact"
+	./operator_refcount -ksp_max_it 3
+	./operator_refcount -ksp_max_it 3 -pc_air_full_smoothing_up_and_down
+	@echo "Test operator reference counts with only one level - the jacobi fallback"
+	./operator_refcount -ksp_max_it 3 -pc_air_max_levels 1
+	./operator_refcount -ksp_max_it 3 -pc_air_max_levels 1 -pc_air_full_smoothing_up_and_down
+	@echo "Test operator reference counts with only one level - auto truncated with a tolerance that always truncates"
+	./operator_refcount -ksp_max_it 3 -pc_air_auto_truncate_start_level 1 -pc_air_auto_truncate_tol 1e10
+	./operator_refcount -ksp_max_it 3 -pc_air_auto_truncate_start_level 1 -pc_air_auto_truncate_tol 1e10 \
+	 -pc_air_full_smoothing_up_and_down
+#
+	@echo ""
 	@echo "Test AIRG with advection and fc smoothing"
 	./adv_diff_fd -da_grid_x 8 -da_grid_y 8 -pc_type air -ksp_max_it 3 -pc_air_smooth_type fc
 	@echo ""
@@ -874,6 +886,12 @@ else
 	@echo ""
 	@echo "Test PCAIR honours KSPSetReusePreconditioner when the pmat values change in place in parallel"
 	$(MPIEXEC) -n 2 ./reuse_preconditioner
+#
+	@echo ""
+	@echo "Test PCAIR gives back the operators it was given with their reference counts intact in parallel"
+	$(MPIEXEC) -n 2 ./operator_refcount -ksp_max_it 3
+	$(MPIEXEC) -n 2 ./operator_refcount -ksp_max_it 3 -pc_air_max_levels 1
+	$(MPIEXEC) -n 2 ./operator_refcount -ksp_max_it 3 -pc_air_auto_truncate_start_level 1 -pc_air_auto_truncate_tol 1e10
 #
 	@echo ""
 	@echo "Test AIRG with advection and fc smoothing in parallel"
