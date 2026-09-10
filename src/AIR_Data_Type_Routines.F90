@@ -285,11 +285,6 @@ module air_data_type_routines
                   air_data%inv_coarsest_poly_data%coefficients => null()
                end if
             end if
-            ! If we're not doing full smoothing, we have built a matshell on the top grid
-            ! we use in the fc smoothing that needs to be destroyed
-            if (.NOT. air_data%options%full_smoothing_up_and_down) then
-               call reset_inverse_mat(air_data%coarse_matrix(1))
-            end if
          end if
       end if 
 

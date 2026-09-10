@@ -641,6 +641,10 @@ module air_mg_setup
             ! Input can be any matrix, we just need the correct type
             call MatGetVecType(air_data%A_fc(our_level), vec_type, ierr)
             call MatShellSetVecType(air_data%coarse_matrix(our_level), vec_type, ierr)
+
+            ! We now own the matrix on this level - on the top level this replaces
+            ! the input pmat, which we must never destroy
+            air_data%allocated_coarse_matrix(our_level) = .TRUE.
          end if         
 
          ! ~~~~~~~~~~~~
@@ -952,8 +956,12 @@ module air_mg_setup
       if (.NOT. (.NOT. PetscObjectIsNull(temp_mat) &
                   .AND. air_data%options%reuse_poly_coeffs)) then
 
-         ! We've already created our coarse solver if we've auto truncated         
-         if (.NOT. auto_truncated) then
+         ! We've already created our coarse solver if we've auto truncated
+         ! With only one level and no auto truncation we fall back to a jacobi PC
+         ! below and never call finish_approximate_inverse, so don't start one -
+         ! start_approximate_inverse takes a reference to the matrix that only
+         ! finish_approximate_inverse gives back
+         if (.NOT. auto_truncated .AND. no_levels > 1) then
             call timer_start(TIMER_ID_AIR_INVERSE)   
 
             call start_approximate_inverse(air_data%coarse_matrix(no_levels), &
@@ -1187,7 +1195,8 @@ module air_mg_setup
       else
          ! Precondition with the "coarse grid" solver we used to determine auto truncation
          if (auto_truncated) then
-            call PetscObjectReference(amat, ierr) 
+            ! PCSetOperators takes its own references to both matrices and drops
+            ! them in PCReset/PCDestroy, so don't take one here
             call PCSetOperators(pcmg_input, amat, &
                         air_data%inv_A_ff(no_levels), ierr)         
             call PCSetType(pcmg_input, PCMAT, ierr)

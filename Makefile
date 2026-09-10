@@ -190,6 +190,7 @@ export TEST_TARGETS = ex12f \
 		  ex6_two_airg \
 		  ilu_factors \
 		  reuse_preconditioner \
+		  operator_refcount \
 		  pmisr_nonsymmetric
 # Include kokkos examples
 ifeq ($(PETSC_HAVE_KOKKOS),1)
