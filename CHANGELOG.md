@@ -6,6 +6,17 @@ for earlier changes please see the git history.
 
 ## Unreleased
 
+- PCPFLAREINV now implements `PCApplyTranspose`, so it can be used as the
+  preconditioner in a `KSPSolveTranspose`. This works for every inverse type,
+  both assembled and matrix-free. It applies the exact transpose of what
+  `PCApply` applies rather than a separately computed approximate inverse of
+  `A^T`, so the two really are adjoints. The matrix-free polynomials do this by
+  applying the same polynomial to a virtual transpose of the operator, which is
+  valid as the coefficients are real, so `q(A)^T = q(A^T)`; that means the
+  operator itself has to support `MatMultTranspose`, which is checked with a
+  clear error for the case where the user has supplied their own MatShell as the
+  operator. `PCMatApplyTranspose` is not implemented directly, so it falls back
+  to PETSc applying `PCApplyTranspose` column by column
 - Fixed PCAIR not passing its options prefix down to its inner PCMG. The
   `-mg_coarse_*` / `-mg_levels_*` options were read unprefixed by every PCAIR
   in a program, and `-foo_mg_coarse_*` for a PCAIR with prefix `-foo_` was

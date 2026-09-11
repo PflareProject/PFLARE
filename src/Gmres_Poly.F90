@@ -11,7 +11,7 @@ module gmres_poly
          PFLARE_REAL_KIND
    use matshell_data_type, only: mat_ctxtype
    use gmres_poly_apply, only: petsc_matvec_poly_mf, petsc_matvec_right_scale_poly_mf, &
-         petsc_matvec_da_poly_mf
+         petsc_matvec_da_poly_mf, petsc_matvec_poly_transpose_mf
    use tsqr, only: finish_tsqr_parallel, start_tsqr, tsqr_buffers
    use gmres_poly_data_type, only: gmres_poly_data
    use petsc_helper, only: MatAXPYWrapper, destroy_matrix_reuse, &
@@ -1409,6 +1409,11 @@ end if
                call MatShellSetOperation(inv_matrix, &
                            MATOP_MULT, petsc_matvec_poly_mf, ierr)
             end if
+            ! The subroutine petsc_matvec_poly_transpose_mf applies the transpose of
+            ! whichever of the two above we just set - it builds a transposed twin of
+            ! this matshell on demand, see ensure_transpose_mat
+            call MatShellSetOperation(inv_matrix, &
+                        MATOP_MULT_TRANSPOSE, petsc_matvec_poly_transpose_mf, ierr)
 
             call MatAssemblyBegin(inv_matrix, MAT_FINAL_ASSEMBLY, ierr)
             call MatAssemblyEnd(inv_matrix, MAT_FINAL_ASSEMBLY, ierr) 

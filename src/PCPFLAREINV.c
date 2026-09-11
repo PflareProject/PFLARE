@@ -662,6 +662,41 @@ static PetscErrorCode PCApply_PFLAREINV_c(PC pc, Vec x, Vec y)
 
 // ~~~~~~~~~~
 
+// Transposed apply, y = mat_inverse^T x - this is the exact transpose of PCApply,
+// not a separately computed approximate inverse of A^T (which would be a different
+// polynomial and hence not an adjoint of what PCApply does).
+// The assembled inverses transpose natively (aij, and matdiagonal for the jacobi
+// types and for poly_order 0). The matrix-free polynomials register a
+// MATOP_MULT_TRANSPOSE that applies the same polynomial to a virtual transpose of
+// the operator, which works because our coefficients are real, so q(A)^T = q(A^T).
+static PetscErrorCode PCApplyTranspose_PFLAREINV_c(PC pc, Vec x, Vec y)
+{
+   PC_PFLAREINV *inv_data;
+   PetscFunctionBegin;
+   inv_data = (PC_PFLAREINV *)pc->data;
+
+   // A matrix-free inverse applies the operator itself, so the operator has to
+   // know how to do a transposed matvec. That is always true of the assembled
+   // types PFLARE builds, but the user is free to hand us their own MatShell as
+   // the operator (which is why we never turn on the diagonal scaling below), and
+   // theirs may only have MATOP_MULT. Catch that here rather than letting it fail
+   // several layers down with an error that mentions neither PFLARE nor which of
+   // the shells in play is the problem.
+   if (inv_data->matrix_free) {
+      PetscBool has_transpose;
+      PetscCall(MatHasOperation(pc->pmat, MATOP_MULT_TRANSPOSE, &has_transpose));
+      PetscCheck(has_transpose, PetscObjectComm((PetscObject)pc), PETSC_ERR_SUP, \
+            "PCPFLAREINV cannot apply its transpose matrix-free as the operator has no MatMultTranspose - " \
+            "register MATOP_MULT_TRANSPOSE on your MatShell, or don't use -pc_pflareinv_matrix_free");
+   }
+
+   // Just call a transposed matmult
+   PetscCall(MatMultTranspose(inv_data->mat_inverse, x, y));
+   PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+// ~~~~~~~~~~
+
 // Multi-RHS apply: Y = mat_inverse * X for dense X, Y.
 // Lets KSPMatSolve / PCMatApply hit a real SpMM (cuSPARSE/hipSPARSE/Kokkos/CPU
 // AIJxDense) instead of PETSc's default column-by-column PCApply fallback.
@@ -672,7 +707,8 @@ static PetscErrorCode PCMatApply_PFLAREINV_c(PC pc, Mat X, Mat Y)
    inv_data = (PC_PFLAREINV *)pc->data;
 
    if (inv_data->matrix_free) {
-      // mat_inverse is a MatShell with only MATOP_MULT registered, so MatMatMult on it
+      // mat_inverse is a MatShell with only MATOP_MULT and MATOP_MULT_TRANSPOSE
+      // registered, so MatMatMult on it
       // would fail. The polynomial matshells can however be applied blockwise by
       // doing the products with the underlying matrix - the Fortran routine below does
       // that and reports whether it managed it.
@@ -1074,6 +1110,9 @@ PETSC_EXTERN PetscErrorCode PCCreate_PFLAREINV(PC pc)
    // Set the method functions
    pc->ops->apply               = PCApply_PFLAREINV_c;
    pc->ops->matapply            = PCMatApply_PFLAREINV_c;
+   // We deliberately don't set matapplytranspose - PCMatApplyTranspose falls back to
+   // applying PCApplyTranspose column by column when it is NULL, which is correct
+   pc->ops->applytranspose      = PCApplyTranspose_PFLAREINV_c;
    pc->ops->setup               = PCSetUp_PFLAREINV_c;
    pc->ops->destroy             = PCDestroy_PFLAREINV_c;
    pc->ops->view                = PCView_PFLAREINV_c;  
