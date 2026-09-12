@@ -43,6 +43,15 @@ module matshell_data_type
       ! The reciprocal of mf_temp_vec(MF_VEC_DIAG), only used by the block applies
       ! of the diagonally scaled polynomials
       type(tVec) :: mf_vec_diag_recip
+      ! The transposed twin of this polynomial, built lazily the first time a
+      ! transposed apply happens (MATOP_MULT_TRANSPOSE) - see ensure_transpose_mat
+      ! It is a matshell running the very same forward arithmetic as this one, but
+      ! against a MATTRANSPOSEVIRTUAL of mat, which is all the transpose needs as
+      ! our polynomials have real coefficients, so q(A)^T = q(A^T)
+      type(tMat) :: transpose_mat
+      ! The mat the twin above was built from, so we can spot mat being swapped
+      ! out from under us - the same handle comparison as mf_product_mat
+      type(tMat) :: mf_transpose_source
       type(air_multigrid_data), pointer :: air_data => null()
 
    end type mat_ctxtype

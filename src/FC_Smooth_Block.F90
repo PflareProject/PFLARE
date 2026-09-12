@@ -349,9 +349,9 @@ module fc_smooth_block
 
       ! Applies one of our approximate inverses to a dense block of right hand
       ! sides, ie the multiple rhs version of MatMult(inv_mat, x, y)
-      ! The matrix-free polynomial inverses are matshells with only a MATOP_MULT,
-      ! so a product on them would fail - they go through the blockwise shell
-      ! apply instead
+      ! The matrix-free polynomial inverses are matshells with only a MATOP_MULT
+      ! and a MATOP_MULT_TRANSPOSE, so a product on them would fail - they go
+      ! through the blockwise shell apply instead
 
       ! ~~~~~~
       type(tMat), intent(in)        :: inv_mat

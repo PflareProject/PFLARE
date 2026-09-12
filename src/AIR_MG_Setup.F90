@@ -1061,7 +1061,8 @@ module air_mg_setup
                ! inv_A_ff, which is what PCMAT does with inv_A_ff as its Pmat
                ! We can't use PCMAT with a matrix-free inverse though, as its
                ! multiple rhs apply does a MatMatMult on the Pmat and the matshell
-               ! only has a MATOP_MULT - use a shell that does the same single rhs
+               ! only has MATOP_MULT and MATOP_MULT_TRANSPOSE - use a shell that
+               ! does the same single rhs
                ! arithmetic and knows how to do the block apply instead
                call MatGetType(air_data%inv_A_ff(our_level), mat_type_inv_aff, ierr)
                if (mat_type_inv_aff == MATSHELL) then

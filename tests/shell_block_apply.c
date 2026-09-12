@@ -221,8 +221,6 @@ int main(int argc, char **args)
 
   PetscFunctionBeginUser;
   PetscCall(PetscInitialize(&argc, &args, (char *)0, help));
-  // We call PFLARE fortran routines directly below, so this has to have been called
-  PetscCall(PetscInitializeFortran());
 
   PetscCall(PetscOptionsGetInt(NULL, NULL, "-n", &n, NULL));
   PetscCall(PetscOptionsGetInt(NULL, NULL, "-nrhs", &nrhs, NULL));

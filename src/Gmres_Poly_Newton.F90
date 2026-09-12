@@ -8,7 +8,8 @@ module gmres_poly_newton
          PFLARE_ONE, PFLARE_ZERO, PFLARE_MINUS_ONE, PFLARE_TWO, PFLARE_MATMULT_FILL, &
          PFLARE_TOL_MATFREE_NEWTON, PFLARE_TOL_LEJA_PERTURB
    use gmres_poly_apply, only: petsc_matvec_poly_newton_mf, &
-         petsc_matvec_right_scale_poly_newton_mf, petsc_matvec_da_poly_mf
+         petsc_matvec_right_scale_poly_newton_mf, petsc_matvec_da_poly_mf, &
+         petsc_matvec_poly_transpose_mf
 
 #include "petsc/finclude/petscmat.h"
 #include "finclude/pflare_blaslapack.h"
@@ -1560,6 +1561,11 @@ end if
             call MatShellSetOperation(inv_matrix, &
                         MATOP_MULT, petsc_matvec_poly_newton_mf, ierr)
             end if
+            ! The subroutine petsc_matvec_poly_transpose_mf applies the transpose of
+            ! whichever of the two above we just set - it builds a transposed twin of
+            ! this matshell on demand, see ensure_transpose_mat
+            call MatShellSetOperation(inv_matrix, &
+                        MATOP_MULT_TRANSPOSE, petsc_matvec_poly_transpose_mf, ierr)
 
             call MatAssemblyBegin(inv_matrix, MAT_FINAL_ASSEMBLY, ierr)
             call MatAssemblyEnd(inv_matrix, MAT_FINAL_ASSEMBLY, ierr)

@@ -11,7 +11,7 @@ module approx_inverse_setup
          start_gmres_polynomial_coefficients_power, &
          calculate_gmres_polynomial_coefficients_arnoldi, &
          build_gmres_polynomial_inverse
-   use gmres_poly_apply, only: petsc_matvec_da_poly_mf
+   use gmres_poly_apply, only: petsc_matvec_da_poly_mf, destroy_transpose_mat
    use gmres_poly_newton, only: &
          build_gmres_polynomial_newton_inverse, &
          calculate_gmres_polynomial_roots_newton
@@ -570,6 +570,10 @@ module approx_inverse_setup
                call VecDestroy(temp_vec, ierr)
                mat_ctx%mf_vec_diag_recip = temp_vec
             end if
+
+            ! Any transposed twin built by a transposed apply (MATOP_MULT_TRANSPOSE)
+            ! This is a no-op unless someone has actually done a PCApplyTranspose
+            call destroy_transpose_mat(mat_ctx, ierr)
 
             ! Neumann polynomial has extra context that needs deleting
             temp_mat = mat_ctx%mat_scaled

@@ -55,6 +55,46 @@ module gmres_poly_apply
 
 ! -------------------------------------------------------------------------------------------------------------------------------
 
+   subroutine petsc_matvec_ida_neumann_poly_mf(mat, x, y)
+
+      ! Applies I-D^-1 A matrix-free
+      ! y = A x
+
+      ! ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+      ! Input
+      type(tMat), intent(in)    :: mat
+      type(tVec) :: x
+      type(tVec) :: y
+
+      ! Local
+      PetscErrorCode :: ierr
+      type(mat_ctxtype), pointer :: mat_ctx_scaled => null()
+
+      ! ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+      call MatShellGetContext(mat, mat_ctx_scaled, ierr)
+
+      ! ~~~~~~~~~~~~
+      ! We want to apply (I-D^-1 A) x
+      ! ~~~~~~~~~~~~
+
+      ! Multiply by A
+      call MatMult(mat_ctx_scaled%mat, x, y, ierr)
+
+      ! Doing D^-1 on the result
+      call VecPointwiseDivide(y, y, mat_ctx_scaled%mf_temp_vec(MF_VEC_DIAG), ierr)
+
+      ! Now do x - D^-1 A x
+      call VecAXPBY(y, &
+               PFLARE_ONE, &
+               PFLARE_MINUS_ONE, &
+               x, ierr)
+
+   end subroutine petsc_matvec_ida_neumann_poly_mf
+
+! -------------------------------------------------------------------------------------------------------------------------------
+
    subroutine petsc_matvec_poly_mf(mat, x, y)
 
       ! Applies a matrix polynomial matrix-free as an inverse
@@ -219,6 +259,262 @@ module gmres_poly_apply
       end do
 
    end subroutine petsc_horner
+
+! -------------------------------------------------------------------------------------------------------------------------------
+
+   subroutine ensure_transpose_mat(mat_ctx, ierr)
+
+      ! Makes sure mat_ctx has a transposed twin, ie a matshell that applies the
+      ! transpose of whatever polynomial mat_ctx applies, and that the twin is
+      ! pointing at the current coefficients and diagonal
+      !
+      ! All our polynomials have real coefficients, so
+      !    q(A)^T = q(A^T)
+      ! and for the right diagonally scaled variants, using
+      !    D^-1 (A^T D^-1)^k = (D^-1 A^T)^k D^-1
+      ! we get
+      !    (q(D^-1 A) D^-1)^T = D^-1 q(A^T D^-1) = q(D^-1 A^T) D^-1
+      ! (and the same for the Neumann form with A replaced by I - D^-1 A, as
+      ! diag(A^T) = diag(A) so D is unchanged)
+      ! In other words the transpose has the identical shell structure with the
+      ! matrix replaced by its transpose, so the twin just runs the very same
+      ! forward callbacks against a MATTRANSPOSEVIRTUAL of mat_ctx%mat - none of
+      ! the horner/newton kernels need to know anything about transposes
+      !
+      ! Note the inner operator the scaled twin needs is D^-1 A^T, which is NOT
+      ! mat_scaled^T = A^T D^-1, so we cannot get there by putting a
+      ! MATOP_MULT_TRANSPOSE on the existing inner matshell - the twin builds its
+      ! own inner matshell around the transposed matrix instead
+      !
+      ! This is built lazily, so the very common case of never doing a transposed
+      ! apply costs nothing. Every rank reaches here through MatMultTranspose, so
+      ! the collective creation below is safe, in the same way the lazy
+      ! VecDuplicate in shell_poly_block_apply is
+
+      ! ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+      ! Input
+      type(mat_ctxtype), intent(inout) :: mat_ctx
+      PetscErrorCode, intent(inout)    :: ierr
+
+      ! Local
+      logical :: scaled
+      PetscInt :: local_rows, local_cols, global_rows, global_cols
+      MPIU_Comm :: MPI_COMM_MATRIX
+      VecType :: vtype
+      type(tMat) :: temp_mat
+      type(mat_ctxtype), pointer :: twin => null(), twin_inner => null()
+
+      ! ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+      ! Are we applying q(D^-1 A) D^-1 (or the Neumann equivalent) rather than q(A)?
+      temp_mat = mat_ctx%mat_scaled
+      scaled = .NOT. PetscObjectIsNull(temp_mat)
+
+      ! If the matrix has been swapped out from under us the twin is stale - the
+      ! MATTRANSPOSEVIRTUAL holds a reference to the old matrix, so it would
+      ! silently keep applying it
+      temp_mat = mat_ctx%transpose_mat
+      if (.NOT. PetscObjectIsNull(temp_mat)) then
+         if (mat_ctx%mf_transpose_source%v /= mat_ctx%mat%v) then
+            call destroy_transpose_mat(mat_ctx, ierr)
+         end if
+      end if
+
+      ! ~~~~~~~~~~~~
+      ! Build the twin if we don't have one
+      ! ~~~~~~~~~~~~
+      temp_mat = mat_ctx%transpose_mat
+      if (PetscObjectIsNull(temp_mat)) then
+
+         call PetscObjectGetComm(mat_ctx%mat, MPI_COMM_MATRIX, ierr)
+         call MatGetLocalSize(mat_ctx%mat, local_rows, local_cols, ierr)
+         call MatGetSize(mat_ctx%mat, global_rows, global_cols, ierr)
+         call MatGetVecType(mat_ctx%mat, vtype, ierr)
+
+         ! Have to dynamically allocate this
+         allocate(twin)
+
+         ! The transposed matrix - this is virtual, MatMult on it just calls
+         ! MatMultTranspose on mat_ctx%mat, so it costs no memory and no assembly
+         ! It takes a reference on mat_ctx%mat, dropped in destroy_transpose_mat
+         call MatCreateTranspose(mat_ctx%mat, twin%mat, ierr)
+
+         ! The twin shell itself - the row/col sizes are written swapped to say
+         ! what we mean, they are equal as our inverses are always square
+         call MatCreateShell(MPI_COMM_MATRIX, local_cols, local_rows, global_cols, global_rows, &
+                     twin, mat_ctx%transpose_mat, ierr)
+
+         ! Give the twin the same forward callback the original shell has - that is
+         ! what makes it apply the same polynomial, just to the transposed matrix
+         if (associated(mat_ctx%real_roots)) then
+            if (scaled) then
+               call MatShellSetOperation(mat_ctx%transpose_mat, &
+                           MATOP_MULT, petsc_matvec_right_scale_poly_newton_mf, ierr)
+            else
+               call MatShellSetOperation(mat_ctx%transpose_mat, &
+                           MATOP_MULT, petsc_matvec_poly_newton_mf, ierr)
+            end if
+         else
+            if (scaled) then
+               call MatShellSetOperation(mat_ctx%transpose_mat, &
+                           MATOP_MULT, petsc_matvec_right_scale_poly_mf, ierr)
+            else
+               call MatShellSetOperation(mat_ctx%transpose_mat, &
+                           MATOP_MULT, petsc_matvec_poly_mf, ierr)
+            end if
+         end if
+
+         call MatAssemblyBegin(mat_ctx%transpose_mat, MAT_FINAL_ASSEMBLY, ierr)
+         call MatAssemblyEnd(mat_ctx%transpose_mat, MAT_FINAL_ASSEMBLY, ierr)
+         ! Have to make sure to set the type of vectors the shell creates
+         call MatShellSetVecType(mat_ctx%transpose_mat, vtype, ierr)
+
+         ! The inner matshell, applying D^-1 A^T (or I - D^-1 A^T for the Neumann
+         ! polynomial) - the same callbacks the forward inner matshell uses, just
+         ! with the transposed matrix in the context
+         if (scaled) then
+
+            ! Have to dynamically allocate this
+            allocate(twin_inner)
+
+            call MatCreateShell(MPI_COMM_MATRIX, local_cols, local_rows, global_cols, global_rows, &
+                        twin_inner, twin%mat_scaled, ierr)
+            if (mat_ctx%neumann_inner) then
+               call MatShellSetOperation(twin%mat_scaled, &
+                           MATOP_MULT, petsc_matvec_ida_neumann_poly_mf, ierr)
+            else
+               call MatShellSetOperation(twin%mat_scaled, &
+                           MATOP_MULT, petsc_matvec_da_poly_mf, ierr)
+            end if
+
+            call MatAssemblyBegin(twin%mat_scaled, MAT_FINAL_ASSEMBLY, ierr)
+            call MatAssemblyEnd(twin%mat_scaled, MAT_FINAL_ASSEMBLY, ierr)
+            call MatShellSetVecType(twin%mat_scaled, vtype, ierr)
+
+            ! The inner shell borrows the transposed matrix, the twin owns it
+            twin_inner%mat = twin%mat
+         end if
+
+         ! Remember what we built the twin from, so we can spot it going stale
+         mat_ctx%mf_transpose_source = mat_ctx%mat
+      end if
+
+      ! ~~~~~~~~~~~~
+      ! Refresh everything the twin borrows, every single apply
+      ! This is not cosmetic - the builders deallocate and reallocate the
+      ! coefficients whenever the matshell is reused with the same nonzero pattern
+      ! but fresh coefficients are computed, and the diagonal in MF_VEC_DIAG is
+      ! updated in place, with no hook that would let us know either has happened
+      ! Everything here is borrowed from mat_ctx and must never be freed by the twin
+      ! ~~~~~~~~~~~~
+      call MatShellGetContext(mat_ctx%transpose_mat, twin, ierr)
+
+      twin%coefficients => mat_ctx%coefficients
+      twin%real_roots => mat_ctx%real_roots
+      twin%imag_roots => mat_ctx%imag_roots
+      ! The twin never owns the coefficients, mat_ctx does
+      twin%own_coefficients = .FALSE.
+      twin%neumann_inner = mat_ctx%neumann_inner
+      ! A forward and a transposed apply never overlap, so the twin can share the
+      ! scratch vectors rather than duplicating them. They are the right layout as
+      ! our inverses are always square
+      twin%mf_temp_vec = mat_ctx%mf_temp_vec
+
+      if (scaled) then
+         call MatShellGetContext(twin%mat_scaled, twin_inner, ierr)
+         twin_inner%coefficients => mat_ctx%coefficients
+         twin_inner%own_coefficients = .FALSE.
+         twin_inner%neumann_inner = mat_ctx%neumann_inner
+         ! diag(A^T) = diag(A), so the forward diagonal is exactly what the
+         ! transposed inner operator needs
+         twin_inner%mf_temp_vec(MF_VEC_DIAG) = mat_ctx%mf_temp_vec(MF_VEC_DIAG)
+      end if
+
+   end subroutine ensure_transpose_mat
+
+! -------------------------------------------------------------------------------------------------------------------------------
+
+   subroutine destroy_transpose_mat(mat_ctx, ierr)
+
+      ! Destroys the transposed twin built by ensure_transpose_mat, if there is one
+      ! The twin borrows the coefficients, the roots, the diagonal and all the
+      ! scratch vectors from mat_ctx, so all we own here are the matrices
+
+      ! ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+      ! Input
+      type(mat_ctxtype), intent(inout) :: mat_ctx
+      PetscErrorCode, intent(inout)    :: ierr
+
+      ! Local
+      type(tMat) :: temp_mat
+      type(mat_ctxtype), pointer :: twin => null(), twin_inner => null()
+
+      ! ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+      temp_mat = mat_ctx%transpose_mat
+      if (PetscObjectIsNull(temp_mat)) return
+
+      call MatShellGetContext(mat_ctx%transpose_mat, twin, ierr)
+
+      ! The inner matshell, if the twin has one - it borrows everything in its
+      ! context, so there is nothing but the shell to get rid of
+      temp_mat = twin%mat_scaled
+      if (.NOT. PetscObjectIsNull(temp_mat)) then
+         call MatShellGetContext(temp_mat, twin_inner, ierr)
+         deallocate(twin_inner)
+         call MatDestroy(temp_mat, ierr)
+         twin%mat_scaled = temp_mat
+      end if
+
+      ! The MATTRANSPOSEVIRTUAL, which drops the reference it holds on mat_ctx%mat
+      call MatDestroy(twin%mat, ierr)
+
+      deallocate(twin)
+
+      ! MatDestroy nulls the local copy of the handle, not the field in the
+      ! context, so copy the nulled handle back
+      temp_mat = mat_ctx%transpose_mat
+      call MatDestroy(temp_mat, ierr)
+      mat_ctx%transpose_mat = temp_mat
+      mat_ctx%mf_transpose_source = temp_mat
+
+   end subroutine destroy_transpose_mat
+
+! -------------------------------------------------------------------------------------------------------------------------------
+
+   subroutine petsc_matvec_poly_transpose_mf(mat, x, y)
+
+      ! Applies the transpose of a matrix-free polynomial inverse
+      ! This is the MATOP_MULT_TRANSPOSE of every polynomial matshell we build -
+      ! one routine covers all of them, because the twin built by
+      ! ensure_transpose_mat already carries the right forward arithmetic
+      ! y = A^T x
+
+      ! ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+      ! Input
+      type(tMat), intent(in)    :: mat
+      type(tVec) :: x
+      type(tVec) :: y
+
+      ! Local
+      PetscErrorCode :: ierr
+      type(mat_ctxtype), pointer :: mat_ctx => null()
+
+      ! ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+      call MatShellGetContext(mat, mat_ctx, ierr)
+
+      ! Build the transposed twin the first time round
+      call ensure_transpose_mat(mat_ctx, ierr)
+
+      ! The twin applies the same polynomial to the transposed matrix, which is
+      ! exactly the transpose of what mat applies
+      call MatMult(mat_ctx%transpose_mat, x, y, ierr)
+
+   end subroutine petsc_matvec_poly_transpose_mf
 
 ! -------------------------------------------------------------------------------------------------------------------------------
 

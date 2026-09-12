@@ -179,6 +179,7 @@ export TEST_TARGETS = ex12f \
 		  adv_1d \
 		  adv_1d_multi_rhs \
 		  shell_block_apply \
+		  pflareinv_apply_transpose \
 		  adv_diff_fd \
 		  ex6_cf_splitting \
 		  adv_diff_cg_supg \

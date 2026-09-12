@@ -2,7 +2,8 @@ module neumann_poly
 
    use petscmat
    use gmres_poly, only: build_gmres_polynomial_inverse
-   use gmres_poly_apply, only: petsc_matvec_right_scale_poly_mf
+   use gmres_poly_apply, only: petsc_matvec_right_scale_poly_mf, &
+         petsc_matvec_ida_neumann_poly_mf, petsc_matvec_poly_transpose_mf
    use matshell_data_type, only: mat_ctxtype
    use tsqr, only: tsqr_buffers
    use pflare_parameters, only: PFLAREINV_NEUMANN, MF_VEC_DIAG, MF_VEC_RHS, MF_VEC_TEMP, &
@@ -14,46 +15,6 @@ module neumann_poly
    public
    
    contains
-
-! -------------------------------------------------------------------------------------------------------------------------------
-
-   subroutine petsc_matvec_ida_neumann_poly_mf(mat, x, y)
-
-      ! Applies I-D^-1 A matrix-free
-      ! y = A x
-
-      ! ~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-      ! Input
-      type(tMat), intent(in)    :: mat
-      type(tVec) :: x
-      type(tVec) :: y
-
-      ! Local
-      PetscErrorCode :: ierr
-      type(mat_ctxtype), pointer :: mat_ctx_scaled => null()
-
-      ! ~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-      call MatShellGetContext(mat, mat_ctx_scaled, ierr)
-
-      ! ~~~~~~~~~~~~
-      ! We want to apply (I-D^-1 A) x
-      ! ~~~~~~~~~~~~
-
-      ! Multiply by A
-      call MatMult(mat_ctx_scaled%mat, x, y, ierr)
-
-      ! Doing D^-1 on the result
-      call VecPointwiseDivide(y, y, mat_ctx_scaled%mf_temp_vec(MF_VEC_DIAG), ierr)
-
-      ! Now do x - D^-1 A x
-      call VecAXPBY(y, &
-               PFLARE_ONE, &
-               PFLARE_MINUS_ONE, &
-               x, ierr)
-
-   end subroutine petsc_matvec_ida_neumann_poly_mf
 
 ! -------------------------------------------------------------------------------------------------------------------------------
 
@@ -123,6 +84,11 @@ module neumann_poly
             ! q(mat) D^-1
             call MatShellSetOperation(inv_matrix, &
                         MATOP_MULT, petsc_matvec_right_scale_poly_mf, ierr)
+            ! The subroutine petsc_matvec_poly_transpose_mf applies the transpose of
+            ! the above - it builds a transposed twin of this matshell on demand,
+            ! see ensure_transpose_mat
+            call MatShellSetOperation(inv_matrix, &
+                        MATOP_MULT_TRANSPOSE, petsc_matvec_poly_transpose_mf, ierr)
 
             call MatAssemblyBegin(inv_matrix, MAT_FINAL_ASSEMBLY, ierr)
             call MatAssemblyEnd(inv_matrix, MAT_FINAL_ASSEMBLY, ierr)

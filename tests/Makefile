@@ -666,6 +666,42 @@ run_tests_no_load_short_serial:
 	./shell_block_apply -n 1000 -nrhs 5 -inverse_type 4
 #
 	@echo ""
+	@echo "Test PCApplyTranspose with an assembled PCPFLAREINV"
+	$(SKIP_SINGLE) ./pflareinv_apply_transpose
+	@echo "Test PCApplyTranspose with an assembled Arnoldi PCPFLAREINV"
+	./pflareinv_apply_transpose -pc_pflareinv_type arnoldi
+	@echo "Test PCApplyTranspose with an assembled Newton PCPFLAREINV"
+	./pflareinv_apply_transpose -pc_pflareinv_type newton
+	@echo "Test PCApplyTranspose with an assembled Neumann PCPFLAREINV"
+	./pflareinv_apply_transpose -pc_pflareinv_type neumann
+	@echo "Test PCApplyTranspose with the assembled non-polynomial PCPFLAREINVs"
+	./pflareinv_apply_transpose -pc_pflareinv_type sai
+	./pflareinv_apply_transpose -pc_pflareinv_type isai
+	./pflareinv_apply_transpose -pc_pflareinv_type wjacobi
+	./pflareinv_apply_transpose -pc_pflareinv_type jacobi
+	@echo "Test PCApplyTranspose with a matrix-free PCPFLAREINV - builds the transposed matshell twin"
+	$(SKIP_SINGLE) ./pflareinv_apply_transpose -pc_pflareinv_matrix_free
+	@echo "Test PCApplyTranspose with a matrix-free Arnoldi PCPFLAREINV"
+	./pflareinv_apply_transpose -pc_pflareinv_matrix_free -pc_pflareinv_type arnoldi
+	@echo "Test PCApplyTranspose with a matrix-free Newton PCPFLAREINV"
+	./pflareinv_apply_transpose -pc_pflareinv_matrix_free -pc_pflareinv_type newton
+	@echo "Test PCApplyTranspose with a matrix-free Newton no extra PCPFLAREINV"
+	./pflareinv_apply_transpose -pc_pflareinv_matrix_free -pc_pflareinv_type newton_no_extra \
+	 -pc_pflareinv_poly_order 10
+	@echo "Test PCApplyTranspose with a matrix-free Neumann PCPFLAREINV - the right diagonally scaled path"
+	./pflareinv_apply_transpose -pc_pflareinv_matrix_free -pc_pflareinv_type neumann
+	@echo "Test PCApplyTranspose after the operator values change - the twin has to pick up new coefficients"
+	./pflareinv_apply_transpose -pc_pflareinv_matrix_free -pc_pflareinv_type newton -rebuild
+	./pflareinv_apply_transpose -pc_pflareinv_matrix_free -pc_pflareinv_type neumann -rebuild
+	./pflareinv_apply_transpose -pc_pflareinv_type newton -rebuild
+	@echo "Test KSPSolveTranspose through PCPFLAREINV, assembled and matrix-free"
+	./pflareinv_apply_transpose -pc_pflareinv_type newton -transpose_solve -ksp_max_it 100
+	./pflareinv_apply_transpose -pc_pflareinv_matrix_free -pc_pflareinv_type newton \
+	 -transpose_solve -ksp_max_it 100
+	@echo "Test PCApplyTranspose at a size too big for the explicit check"
+	./pflareinv_apply_transpose -n 5000 -pc_pflareinv_matrix_free -pc_pflareinv_type newton
+#
+	@echo ""
 	@echo "Test 3D upwind finite-difference"
 	./adv_diff_fd -dim 3 -da_grid_x 10 -da_grid_y 10 -da_grid_z 10 -pc_type air -ksp_pc_side right \
 	 -ksp_rtol $(KSP_RTOL) -ksp_atol 1e-50 -pc_air_a_lump -ksp_max_it 4
@@ -1167,6 +1203,25 @@ else
 	$(MPIEXEC) -n 2 ./shell_block_apply -n 1000 -nrhs 5 -inverse_type 2
 	@echo "Test the block apply of the matrix-free Neumann matshell directly in parallel"
 	$(MPIEXEC) -n 2 ./shell_block_apply -n 1000 -nrhs 5 -inverse_type 4
+#	
+	@echo ""
+	@echo "Test PCApplyTranspose with an assembled PCPFLAREINV in parallel"
+	$(MPIEXEC) -n 2 ./pflareinv_apply_transpose -pc_pflareinv_type arnoldi
+	$(MPIEXEC) -n 2 ./pflareinv_apply_transpose -pc_pflareinv_type newton
+	$(MPIEXEC) -n 2 ./pflareinv_apply_transpose -pc_pflareinv_type neumann
+	$(MPIEXEC) -n 2 ./pflareinv_apply_transpose -pc_pflareinv_type wjacobi
+	@echo "Test PCApplyTranspose with a matrix-free PCPFLAREINV in parallel - builds the transposed matshell twin"
+	$(MPIEXEC) -n 2 ./pflareinv_apply_transpose -pc_pflareinv_matrix_free -pc_pflareinv_type arnoldi
+	$(MPIEXEC) -n 2 ./pflareinv_apply_transpose -pc_pflareinv_matrix_free -pc_pflareinv_type newton
+	@echo "Test PCApplyTranspose with a matrix-free Neumann PCPFLAREINV in parallel - the right diagonally scaled path"
+	$(MPIEXEC) -n 2 ./pflareinv_apply_transpose -pc_pflareinv_matrix_free -pc_pflareinv_type neumann
+	@echo "Test PCApplyTranspose after the operator values change in parallel"
+	$(MPIEXEC) -n 2 ./pflareinv_apply_transpose -pc_pflareinv_matrix_free -pc_pflareinv_type newton -rebuild
+	$(MPIEXEC) -n 2 ./pflareinv_apply_transpose -pc_pflareinv_matrix_free -pc_pflareinv_type neumann -rebuild
+	@echo "Test KSPSolveTranspose through PCPFLAREINV in parallel, assembled and matrix-free"
+	$(MPIEXEC) -n 2 ./pflareinv_apply_transpose -pc_pflareinv_type newton -transpose_solve -ksp_max_it 100
+	$(MPIEXEC) -n 2 ./pflareinv_apply_transpose -pc_pflareinv_matrix_free -pc_pflareinv_type newton \
+	 -transpose_solve -ksp_max_it 100
 #
 	@echo ""
 	@echo "Test 3D upwind finite-difference in parallel"
